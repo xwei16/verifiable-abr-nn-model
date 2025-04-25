@@ -25,8 +25,8 @@ from utils import load_ppo2_model, row_to_state
 
 
 MODEL_PATH   = "../../pensieve_rl_model/nn_model_ep_155400.pth"
-# CSV_PATH     = "../../src/pensieve_big_testing_data.csv"
-CSV_PATH     = "../../src/filtered_good_testing_data.csv"
+CSV_PATH     = "../../src/pensieve_big_testing_data.csv"
+# CSV_PATH     = "../../src/filtered_good_testing_data.csv"
 SPEC_PATH    = "../../src/qoe_spec.json"
 OUT_CSV      = "pgd_attacked_torch_data.csv"
 
@@ -40,26 +40,19 @@ ALPHA = 0.001                       # step size
 STEPS = 40                          # number of PGD steps
 TARGET_CLASS = 0                    # target class [0: 300 kbps, 1: 1000 kbps]
 M = 0                               # number of spec
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+DEVICE = torch.device("cpu")
 
 # PPO2 parameters
 S_DIM = [6, 8]
 A_DIM = 6
 ACTOR_LR_RATE = 1e-4
 
-# TODO: hardcoded
-
-
-
-## Load data
-
 df   = pd.read_csv(CSV_PATH)
 raw  = json.load(open(SPEC_PATH))
 spec  = raw if isinstance(raw, list) else [raw]
 M    = len(spec)
 N = len(df)
-
-
 
 model = load_ppo2_model(MODEL_PATH, S_DIM, A_DIM, ACTOR_LR_RATE)
 
@@ -72,7 +65,7 @@ for i in tqdm(range(N), desc="PGD attack"):
     x0 = state0[3, 7].astype(np.float32)
 
     state0 = np.expand_dims(state0, axis=0)
-    pred = model.predict_with_grad(state0)
+    pred = model.predict(state0)
     print(f"pred: {pred}")
     pred = np.argmax(pred)
 
@@ -82,19 +75,30 @@ for i in tqdm(range(N), desc="PGD attack"):
         continue
     
     x_adv = x0
+    x_adv_prev = x0
+    state_cur = None
+    thrpt_times = None
     
     for _ in range(STEPS):
         state_cur = state0.flatten()
         state_cur[ATTACK_IDXS[0]] = float(x_adv)
+        thrpt_times = x_adv_prev / x_adv
+        state_cur[ATTACK_IDXS[0] - 8] *= thrpt_times
         state_cur = state_cur.reshape(state0.shape)
-        
-        output = np.argmax(model.predict(state_cur))
+
+        state_cur = torch.from_numpy(state_cur).to(torch.float32).requires_grad_(True)
+
+        output = model.forward(state_cur)
+        # Add batch dimension
+        if output.dim() == 1:
+            output = output.unsqueeze(0)    # Now shape: (1, 6)
         target = torch.tensor([TARGET_CLASS], device=DEVICE)
         loss = torch.nn.functional.cross_entropy(output, target)
         loss.backward()
-        grad = state_cur.grad.view(-1)[ATTACK_IDXS[0]].item()
+        grad = state_cur.grad.view(-1)[ATTACK_IDXS[0]]
 
         x_perturbation = ALPHA * torch.sign(grad)
+        x_adv_prev = x_adv
         x_adv += x_perturbation
         x_adv = torch.clamp(x_adv, x0 - EPS, x0 + EPS)
         x_adv = torch.clamp(x_adv, low_bound, high_bound)

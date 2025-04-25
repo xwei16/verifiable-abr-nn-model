@@ -134,11 +134,9 @@ class Network():
             pi = self.actor.forward(input)[0]
             return pi.numpy()
     
-    def predict_with_grad(self, input):
-        with torch.enable_grad():
-            input = torch.from_numpy(input).to(torch.float32)
-            pi = self.actor.forward(input)[0]
-            return pi.detach().numpy()
+    def forward(self, input):
+        pi = self.actor.forward(input)[0]
+        return pi
 
     def load_model(self, nn_model):
         actor_model_params, critic_model_params = torch.load(nn_model)
