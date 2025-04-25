@@ -1,0 +1,76 @@
+{"Last1_chunk_bitrate": [0.07, 0.08], "Last1_buffer_size": [0.4, 0.5], "Last1_downloadtime": [0.28, 0.66], "Last2_downloadtime": [0.28, 0.66], "Last3_downloadtime": [0.28, 0.66]}
+output: {300.0}
+
+--------------------------------------------------
+{"Last1_chunk_bitrate": [0.07, 0.08], "Last1_buffer_size": [0.4, 0.89], "Last1_downloadtime": [0.02, 0.66], "Last2_downloadtime": [0.02, 1.05], "Last3_downloadtime": [0.02, 1.05]}
+output: {300.0, 750.0}
+
+--------------------------------------------------
+{"Last1_chunk_bitrate": [0.07, 0.08], "Last1_buffer_size": [0.4, 0.99], "Last1_downloadtime": [0.02, 0.66], "Last2_downloadtime": [0.02, 1.05], "Last3_downloadtime": [0.02, 1.05]}
+output: {1200.0, 300.0, 750.0}
+
+--------------------------------------------------
+{"Last1_chunk_bitrate": [0.07, 0.08], "Last1_buffer_size": [0.47, 0.68], "Last1_downloadtime": [0.02, 0.54], "Last2_downloadtime": [0.15, 0.92], "Last3_downloadtime": [0.15, 0.66]}
+output: {300.0}
+
+--------------------------------------------------
+{"Last1_chunk_bitrate": [0.17, 0.18], "Last1_buffer_size": [0.57, 0.89], "Last1_downloadtime": [0.15, 0.79], "Last2_downloadtime": [0.15, 0.79], "Last3_downloadtime": [0.15, 0.79]}
+output: {1850.0, 300.0, 750.0}
+
+--------------------------------------------------
+{"Last1_chunk_bitrate": [0.17, 0.18], "Last1_buffer_size": [0.57, 1.06], "Last1_downloadtime": [0.02, 0.79], "Last2_downloadtime": [0.02, 0.79], "Last3_downloadtime": [0.02, 0.79]}
+output: {1200.0, 1850.0, 300.0, 750.0}
+
+--------------------------------------------------
+{"Last1_chunk_bitrate": [0.17, 0.18], "Last1_buffer_size": [0.71, 1.06], "Last1_downloadtime": [0.02, 0.66], "Last2_downloadtime": [0.02, 0.79], "Last3_downloadtime": [0.02, 0.79]}
+output: {1200.0, 1850.0, 750.0}
+
+--------------------------------------------------
+{"Last1_chunk_bitrate": [0.27, 0.28], "Last1_buffer_size": [0.71, 0.85], "Last1_downloadtime": [0.41, 0.79], "Last2_downloadtime": [0.15, 0.66], "Last3_downloadtime": [0.15, 0.54]}
+output: {1200.0, 300.0, 750.0}
+
+--------------------------------------------------
+{"Last1_chunk_bitrate": [0.27, 0.28], "Last1_buffer_size": [0.71, 1.23], "Last1_downloadtime": [0.15, 0.79], "Last2_downloadtime": [0.02, 0.79], "Last3_downloadtime": [0.02, 0.79]}
+output: {2850.0, 300.0, 750.0, 1200.0, 1850.0}
+
+--------------------------------------------------
+{"Last1_chunk_bitrate": [0.27, 0.28], "Last1_buffer_size": [0.75, 0.85], "Last1_downloadtime": [0.41, 0.79], "Last2_downloadtime": [0.15, 0.66], "Last3_downloadtime": [0.15, 0.54]}
+output: {1200.0, 750.0}
+
+--------------------------------------------------
+{"Last1_chunk_bitrate": [0.27, 0.28], "Last1_buffer_size": [0.85, 1.06], "Last1_downloadtime": [0.15, 0.66], "Last2_downloadtime": [0.15, 0.66], "Last3_downloadtime": [0.15, 0.79]}
+output: {1200.0, 750.0}
+
+--------------------------------------------------
+{"Last1_chunk_bitrate": [0.27, 0.28], "Last1_buffer_size": [0.85, 1.09], "Last1_downloadtime": [0.15, 0.66], "Last2_downloadtime": [0.15, 0.66], "Last3_downloadtime": [0.15, 0.79]}
+output: {1200.0, 2850.0, 750.0}
+
+--------------------------------------------------
+{"Last1_chunk_bitrate": [0.42, 0.43], "Last1_buffer_size": [0.92, 1.44], "Last1_downloadtime": [0.15, 0.79], "Last2_downloadtime": [0.15, 0.66], "Last3_downloadtime": [0.02, 0.66]}
+output: {2850.0, 4300.0, 750.0, 1200.0, 1850.0}
+
+--------------------------------------------------
+{"Last1_chunk_bitrate": [0.42, 0.43], "Last1_buffer_size": [0.96, 1.06], "Last1_downloadtime": [0.41, 0.79], "Last2_downloadtime": [0.28, 0.66], "Last3_downloadtime": [0.15, 0.54]}
+output: {1200.0, 1850.0, 750.0}
+
+--------------------------------------------------
+{"Last1_chunk_bitrate": [0.42, 0.43], "Last1_buffer_size": [1.09, 1.44], "Last1_downloadtime": [0.15, 0.66], "Last2_downloadtime": [0.15, 0.66], "Last3_downloadtime": [0.02, 0.66]}
+output: {2850.0, 4300.0, 1850.0, 750.0}
+
+--------------------------------------------------
+{"Last1_chunk_bitrate": [0.66, 0.67], "Last1_buffer_size": [1.16, 1.51], "Last1_downloadtime": [0.15, 0.79], "Last2_downloadtime": [0.15, 0.66], "Last3_downloadtime": [0.15, 0.66]}
+output: {2850.0, 4300.0, 1850.0, 750.0}
+
+--------------------------------------------------
+{"Last1_chunk_bitrate": [0.66, 0.67], "Last1_buffer_size": [1.2, 1.41], "Last1_downloadtime": [0.28, 0.66], "Last2_downloadtime": [0.15, 0.66], "Last3_downloadtime": [0.15, 0.66]}
+output: {2850.0, 1850.0, 750.0}
+
+--------------------------------------------------
+{"Last1_chunk_bitrate": [0.66, 0.67], "Last1_buffer_size": [1.3, 1.41], "Last1_downloadtime": [0.28, 0.66], "Last2_downloadtime": [0.15, 0.54], "Last3_downloadtime": [0.15, 0.54]}
+output: {2850.0, 750.0}
+
+--------------------------------------------------
+{"Last1_chunk_bitrate": [0.66, 0.67], "Last1_buffer_size": [1.3, 1.51], "Last1_downloadtime": [0.15, 0.66], "Last2_downloadtime": [0.15, 0.66], "Last3_downloadtime": [0.15, 0.66]}
+output: {2850.0, 4300.0, 750.0}
+
+--------------------------------------------------
