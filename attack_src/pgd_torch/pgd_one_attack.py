@@ -66,7 +66,7 @@ for i in tqdm(range(N), desc="PGD attack"):
 
     state0 = np.expand_dims(state0, axis=0)
     pred = model.predict(state0)
-    print(f"pred: {pred}")
+    # print(f"pred: {pred}")
     pred = np.argmax(pred)
 
     
