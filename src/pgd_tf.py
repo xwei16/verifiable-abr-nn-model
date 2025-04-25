@@ -21,7 +21,7 @@ CKPT_PREFIX   = "/home/xwei16/abr-verification/pensieve_rl_model/pretrain_linear
 #CSV_PATH      = "filtered_good_testing_data.csv"
 CSV_PATH      = "test.csv"
 SPEC_PATH     = "qoe_spec.json"
-OUT_CSV       = "pgd_attacked_data.csv"
+OUT_CSV        = "pgd_attacked_data.csv"
 
 
 FEATURES = [                         # exactly five columns we attack
