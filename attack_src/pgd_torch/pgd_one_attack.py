@@ -17,8 +17,12 @@ import random
 import collections as C
 import os
 
+from tqdm import tqdm
 
-MODEL_PATH   = "../../pensieve_rl_model/pretrain_linear_reward.pt"
+import ppo2 as network
+
+
+MODEL_PATH   = "../../pensieve_rl_model/nn_model_ep_155400.pth"
 CSV_PATH     = "../../src/filtered_good_testing_data.csv"
 SPEC_PATH    = "../../src/qoe_spec.json"
 OUT_CSV      = "pgd_attacked_torch_data.csv"
@@ -33,7 +37,13 @@ ALPHA = 0.001                       # step size
 STEPS = 40                          # number of PGD steps
 TARGET_CLASS = 0                    # target class [0: 300 kbps, 1: 1000 kbps]
 M = 0                               # number of spec
+# DEVICE = torch.device("cpu")
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# PPO2 parameters
+S_DIM = [6, 8]
+A_DIM = 6
+ACTOR_LR_RATE = 1e-4
 
 
 def row_to_state(r, spec):
@@ -45,12 +55,11 @@ def row_to_state(r, spec):
     s[3] = r[[f"Last{i}_downloadtime" for i in range(8, 0, -1)]].values
     s[4, :6] = r[[f"chunksize{i}"        for i in range(1, 7)]].values
     s[5, 0] = r["Chunks_left"]
-    #TODO: what is this doing?
-    print(len(spec))
-    print(spec)
+    # print(len(spec))
+    # print(spec)
     chosen = random.choice(spec)
-    print(len(chosen))
-    print(chosen)
+    # print(len(chosen))
+    # print(chosen)
     s[3, 7] = random.uniform(
         chosen["Last1_downloadtime_l"],
         chosen["Last1_downloadtime_u"]
@@ -70,15 +79,21 @@ low  = np.array([spec[i][f"{k}_l"] for k in FEATURES for i in range(M)],
 high = np.array([spec[i][f"{k}_u"] for k in FEATURES for i in range(M)],
                 dtype=np.float32)
 
-#TODO: something needs to be changed later, ask @xwei16
+#TODO: [3, 7] is the index of Last1_downloadtime
 N = len(df)
 states_np = np.stack([row_to_state(r, spec) for _, r in df.iterrows()])  # Shape: (N, 6, 8)
 orig_feats = states_np[:, 3, 7].astype(np.float32)
 
-
 if os.path.exists(MODEL_PATH):
-    model = torch.load(MODEL_PATH, map_location=DEVICE)
-    print(f"Loaded native PyTorch model from {MODEL_PATH}")
+    # TODO: load parameters from file
+    actor = network.Network(state_dim=S_DIM, 
+                            action_dim=A_DIM,
+                            learning_rate=ACTOR_LR_RATE)
+    model = actor.load_model(MODEL_PATH)
+    model = actor
+    # TODO: move to GPU
+    # model.to(DEVICE)
+    print(model)
 else:
     raise FileNotFoundError(f"PyTorch model not found at {MODEL_PATH}")
 
@@ -87,15 +102,19 @@ else:
 
 adv_feats = np.empty_like(orig_feats)
 
-model.eval()
+# model.eval()
 
-for i in range(N):
-    state0 = torch.tensor(states_np[i:i+1], device=DEVICE)  # keep batch dim = 1
-    x0 = orig_feats[i]  # scalar (one feature)
+
+for i in tqdm(range(N)):
+
+    # state0 = torch.tensor(states_np[i:i+1], device=DEVICE).cpu().detach().numpy()
+    state0 = states_np[i:i+1]
+    x0 = orig_feats[i]
     
-    # Skip if already class-0
-    with torch.no_grad():
-        pred = torch.argmax(model(state0), dim=1)[0].item()
+    pred = model.predict(state0)
+    print(f"pred: {pred}")
+    pred = np.argmax(pred)
+
     
     if pred == TARGET_CLASS:
         adv_feats[i] = x0
@@ -104,35 +123,29 @@ for i in range(N):
     x_adv = x0
     
     for _ in range(STEPS):
-        # Create a copy of the state and inject the adversarial value
-        state_cur = state0.clone().detach()
+        state_cur = state0.clone().detach().requires_grad_(True).flatten()
         state_cur_flat = state_cur.view(-1)
         state_cur_flat[ATTACK_IDXS[0]] = float(x_adv)
         
-        # Set requires_grad
-        state_cur.requires_grad = True
-        
-        # Forward pass
-        logits = model(state_cur)
-        
-        # Compute loss (cross-entropy to target class)
+        output = np.argmax(model.predict(state_cur))
         target = torch.tensor([TARGET_CLASS], device=DEVICE)
-        loss = torch.nn.functional.cross_entropy(logits, target)
-        
-        # Backward pass
+        loss = torch.nn.functional.cross_entropy(output, target)
         loss.backward()
-        
-        # Get gradient for the attack index
         grad = state_cur.grad.view(-1)[ATTACK_IDXS[0]].item()
-        
-        # PGD update
-        x_adv = x_adv - ALPHA * np.sign(grad)
-        
-        # Project back to L∞ ball
-        x_adv = np.clip(x_adv, x0 - EPS, x0 + EPS)
-        
-        # Project to spec bounds
-        x_adv = np.clip(x_adv, low, high)
+
+        x_perturbation = ALPHA * torch.sign(grad)
+        x_adv += x_perturbation
+        x_adv = torch.clamp(x_adv, x0 - EPS, x0 + EPS)
+        x_adv = torch.clamp(x_adv, low, high)
+
+        if i == 0:
+            print(f"x_adv: {x_adv}")
+            print(f"x0: {x0}")
+            print(f"x_perturbation: {x_perturbation}")
+            print(f"grad: {grad}")
+            print(f"output: {output}")
+            print(f"target: {target}")
+            print(f"loss: {loss}")
     
     adv_feats[i] = x_adv
 
@@ -152,16 +165,24 @@ print("\n▶  Verifying attack effectiveness …")
 success = unchanged = higher = 0
 orig_preds, adv_preds = [], []
 
-model.eval()
 with torch.no_grad():
     for i in range(N):
-        state_orig = torch.tensor(states_np[i:i+1], device=DEVICE)
-        state_adv = state_orig.clone()
-        state_adv_flat = state_adv.view(-1)
-        state_adv_flat[ATTACK_IDXS[0]] = adv_feats[i, 0]
+        # state_orig = states_np[i:i+1]
+        # state_adv = state_orig.clone().detach().requires_grad_(True).flatten()
+        # state_adv_flat = state_adv.view(-1)
+        # state_adv_flat[ATTACK_IDXS[0]] = float(x_adv)
 
-        p_orig = torch.argmax(model(state_orig), dim=1)[0].item()
-        p_adv = torch.argmax(model(state_adv), dim=1)[0].item()
+        state_orig = states_np[i:i+1]
+        state_orig_flat = state_orig.flatten()
+        state_adv = state_orig_flat.copy()
+        state_adv[ATTACK_IDXS[0]] = adv_feats[i, 0]
+        state_adv = state_adv.reshape(state_orig.shape)
+
+        # state_orig = torch.tensor(state_orig, device=DEVICE).requires_grad_(True)
+        # state_adv = torch.tensor(state_adv, device=DEVICE).requires_grad_(True)
+
+        p_orig = np.argmax(model.predict(state_orig))
+        p_adv = np.argmax(model.predict(state_adv))
 
         orig_preds.append(p_orig)
         adv_preds.append(p_adv)
