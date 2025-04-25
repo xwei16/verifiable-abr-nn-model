@@ -18,7 +18,7 @@ import random
 
 # -------------- CONFIG --------------------------------------------
 CKPT_PREFIX   = "/home/xwei16/abr-verification/pensieve_rl_model/pretrain_linear_reward.ckpt"
-CSV_PATH      = "filtered_good_testing_data.csv"#"pensieve_big_testing_data.csv"
+CSV_PATH      = "pensieve_big_testing_data.csv" #"filtered_good_testing_data.csv"
 SPEC_PATH     = "qoe_spec.json"
 OUT_CSV       = "pgd_attacked_data.csv"
 
@@ -90,15 +90,24 @@ with graph.as_default():
 
 
 # ============ 3. run PGD ==========================================
-
-adv_feats = np.empty_like(orig_feats)
+def find_bound(x, low, high):
+    """Find the closest bound for x."""
+    for i in range(M):
+        if x >= low[i] and x <= high[i]:
+            return i
+        return None
+    
+adv_feats = np.zeros_like(orig_feats)
 
 with tf.Session(graph=graph) as sess:
     saver.restore(sess, CKPT_PREFIX)
 
     for i in range(N):
         state0 = states_np[i:i+1]                 # keep batch dim = 1
-        x0     = orig_feats[i]                 # scalar (one feature)
+        x0 = float(orig_feats[i,0]) #orig_feats[i]
+        
+        #find bound
+        bound = find_bound(x0, low, high)
 
         # skip if already class-0
         pred = sess.run(logits_op,
@@ -111,7 +120,12 @@ with tf.Session(graph=graph) as sess:
         for _ in range(STEPS):
             # inject current adversarial value into a copy of the state
             state_cur = state0.copy()                                      ### <<< added
-            state_cur.flat[ATTACK_IDXS[0]] = float(x_adv)   # changed                     ### <<< added
+            try:
+                state_cur.flat[ATTACK_IDXS[0]] = x_adv
+            except ValueError as e:
+                print(f"[Warning] Skipped sample {i} due to bad x_adv: {x_adv} ({type(x_adv)}), reason: {e}")
+           #     adv_feats[i, 0] = orig_feats[i, 0]  # fallback: use original value
+                continue  # skip PGD for this sample
 
             # gradient for that element
             g_state = sess.run(grad_state, {state_ph: state_cur})[0]       ### <<< changed
@@ -119,7 +133,7 @@ with tf.Session(graph=graph) as sess:
 
             x_adv -= ALPHA * np.sign(g)
             x_adv  = np.clip(x_adv, x0 - EPS, x0 + EPS)   # L∞ ball
-            x_adv  = np.clip(x_adv, low, high)            # spec bounds
+            x_adv  = np.clip(x_adv, low[bound], high[bound])            # spec bounds
 
         adv_feats[i] = x_adv
 
