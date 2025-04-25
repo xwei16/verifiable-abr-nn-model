@@ -21,6 +21,8 @@ from tqdm import tqdm
 
 import ppo2 as network
 
+from utils import load_ppo2_model, row_to_state
+
 
 MODEL_PATH   = "../../pensieve_rl_model/nn_model_ep_155400.pth"
 # CSV_PATH     = "../../src/pensieve_big_testing_data.csv"
@@ -46,25 +48,7 @@ A_DIM = 6
 ACTOR_LR_RATE = 1e-4
 
 # TODO: hardcoded
-def row_to_state(r, spec):
-    """Convert one pandas row to Pensieve state (6×8)."""
-    s = np.zeros((6, 8), dtype=np.float32)
-    s[0, 0] = r["Last1_chunk_bitrate"]
-    s[1, 0] = r["Last1_buffer_size"]
-    s[2] = r[[f"Last{i}_throughput"   for i in range(8, 0, -1)]].values
-    s[3] = r[[f"Last{i}_downloadtime" for i in range(8, 0, -1)]].values
-    s[4, :6] = r[[f"chunksize{i}"        for i in range(1, 7)]].values
-    s[5, 0] = r["Chunks_left"]
 
-    chosen = spec[random.randint(0, len(spec) - 1)]   
-    s[3, 7] = random.uniform(
-        chosen["Last1_downloadtime_l"],
-        chosen["Last1_downloadtime_u"]
-    )
-    low = chosen["Last1_downloadtime_l"]
-    high = chosen["Last1_downloadtime_u"]
-
-    return s, low, high
 
 
 ## Load data
@@ -75,19 +59,9 @@ spec  = raw if isinstance(raw, list) else [raw]
 M    = len(spec)
 N = len(df)
 
-if os.path.exists(MODEL_PATH):
-    # TODO: load parameters from file
-    actor = network.Network(state_dim=S_DIM, 
-                            action_dim=A_DIM,
-                            learning_rate=ACTOR_LR_RATE)
-    model = actor.load_model(MODEL_PATH)
-    model = actor
-    # TODO: move to GPU
-    # model.to(DEVICE)
-    print(model)
-else:
-    raise FileNotFoundError(f"PyTorch model not found at {MODEL_PATH}")
 
+
+model = load_ppo2_model(MODEL_PATH, S_DIM, A_DIM, ACTOR_LR_RATE)
 
 ## PGD attack
 
@@ -98,7 +72,7 @@ for i in tqdm(range(N), desc="PGD attack"):
     x0 = state0[3, 7].astype(np.float32)
 
     state0 = np.expand_dims(state0, axis=0)
-    pred = model.predict(state0)
+    pred = model.predict_with_grad(state0)
     print(f"pred: {pred}")
     pred = np.argmax(pred)
 
@@ -141,29 +115,28 @@ print(f"Adversarial CSV written →  {OUT_CSV}")
 success = unchanged = higher = 0
 orig_preds, adv_preds = [], []
 
-with torch.no_grad():
-    for i in tqdm(range(N), desc="Verifying attack effectiveness"):
-        state_orig, _, _ = row_to_state(df.iloc[i], spec=spec)
-        state_orig_flat = state_orig.flatten()
-        state_adv = state_orig_flat.copy()
-        state_adv[ATTACK_IDXS[0]] = adv_feats[i]
-        state_adv = state_adv.reshape(state_orig.shape)
+for i in tqdm(range(N), desc="Verifying attack effectiveness"):
+    state_orig, _, _ = row_to_state(df.iloc[i], spec=spec)
+    state_orig_flat = state_orig.flatten()
+    state_adv = state_orig_flat.copy()
+    state_adv[ATTACK_IDXS[0]] = adv_feats[i]
+    state_adv = state_adv.reshape(state_orig.shape)
 
-        state_orig = np.expand_dims(state_orig, axis=0)
-        state_adv = np.expand_dims(state_adv, axis=0)
+    state_orig = np.expand_dims(state_orig, axis=0)
+    state_adv = np.expand_dims(state_adv, axis=0)
 
-        p_orig = np.argmax(model.predict(state_orig))
-        p_adv = np.argmax(model.predict(state_adv))
+    p_orig = np.argmax(model.predict(state_orig))
+    p_adv = np.argmax(model.predict(state_adv))
 
-        orig_preds.append(p_orig)
-        adv_preds.append(p_adv)
+    orig_preds.append(p_orig)
+    adv_preds.append(p_adv)
 
-        if p_adv < p_orig:
-            success += 1
-        elif p_adv == p_orig:
-            unchanged += 1
-        else:
-            higher += 1
+    if p_adv < p_orig:
+        success += 1
+    elif p_adv == p_orig:
+        unchanged += 1
+    else:
+        higher += 1
 
 print(f"Total samples           : {N}")
 print(f"Successful downgrades   : {success}  ({success / N * 100:.1f}%)")
