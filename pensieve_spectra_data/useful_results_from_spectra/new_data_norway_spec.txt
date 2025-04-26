@@ -1,0 +1,4 @@
+{"a_Last1_chunk_bitrate": [0.07, 0.08], "a_Last1_buffer_size": [0.88, 0.99], "a_Last1_downloadtime": [0.9, 1.72], "a_Last2_downloadtime": [0.9, 1.72], "a_Last3_downloadtime": [3.92, 5.29]}
+output: {1200, 300, 750}
+
+--------------------------------------------------

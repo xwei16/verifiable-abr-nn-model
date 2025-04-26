@@ -2,6 +2,17 @@ import os
 import random
 import numpy as np
 import ppo2 as network
+def row_to_state_for_rand(r):
+    """Convert one pandas row to Pensieve state (6×8)."""
+    s = np.zeros((6, 8), dtype=np.float32)
+    s[0, 0] = r["Last1_chunk_bitrate"]
+    s[1, 0] = r["Last1_buffer_size"]
+    s[2] = r[[f"Last{i}_throughput"   for i in range(8, 0, -1)]].values
+    s[3] = r[[f"Last{i}_downloadtime" for i in range(8, 0, -1)]].values
+    s[4, :6] = r[[f"chunksize{i}"        for i in range(1, 7)]].values
+    s[5, 0] = r["Chunks_left"]
+
+    return s
 
 # TODO: hardcoded
 def row_to_state(r, spec):

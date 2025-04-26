@@ -1,7 +1,8 @@
 import json
 import numpy as np
 
-
+SPEC_FILE = "pensieve_spectra_data/useful_results_from_spectra/abr_original_fullspec_5float.txt"
+SPEC_JSON_OUT_FILE = "data/full_spec.json"
 brs = [300, 750, 1200, 1850, 2850, 4300]
 
 def compute_qoe(last_bitrates_l, last_bitrates_u, current_bitrates):
@@ -23,7 +24,7 @@ def compute_qoe(last_bitrates_l, last_bitrates_u, current_bitrates):
     return qoe_set
     
 # Read your input file
-with open("../useful_results/abr_original_lastbr_5float.txt", "r") as file:
+with open(SPEC_FILE, "r") as file:
     content = file.read()
 
 # Split blocks by the separator line
@@ -65,5 +66,5 @@ for block in blocks:
     parsed_data.append(flattened)
 
 # Write to a JSON file
-with open("qoe_spec.json", "w") as jsonfile:
+with open(SPEC_JSON_OUT_FILE, "w") as jsonfile:
     json.dump(parsed_data, jsonfile, indent=2)

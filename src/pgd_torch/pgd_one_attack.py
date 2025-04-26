@@ -21,14 +21,15 @@ from tqdm import tqdm
 
 import ppo2 as network
 
-from utils import load_ppo2_model, row_to_state
+from utils import load_ppo2_model, row_to_state, row_to_state_for_rand
 
 
-MODEL_PATH   = "../../pensieve_rl_model/nn_model_ep_155400.pth"
-CSV_PATH     = "../../src/pensieve_big_testing_data.csv"
+MODEL_PATH   = "pensieve_rl_model/nn_model_ep_155400.pth"
+CSV_PATH     = "data/pensieve_big_testing_data.csv"
 # CSV_PATH     = "../../src/filtered_good_testing_data.csv"
-SPEC_PATH    = "../../src/qoe_spec.json"
-OUT_CSV      = "pgd_attacked_torch_data.csv"
+SPEC_PATH    = "data/qoe_spec.json"
+OUT_CSV      = "results/pgd_attacked_torch_data.csv"
+OUT_SUCCESSFUL_CSV = "results/pgd_successful_attack.csv"
 
 FEATURES = [                         # feature(s) to attack
     "Last1_downloadtime"
@@ -48,11 +49,15 @@ S_DIM = [6, 8]
 A_DIM = 6
 ACTOR_LR_RATE = 1e-4
 
+NUM_CONT_CHUNKS_TO_LOG = 1
+
 df   = pd.read_csv(CSV_PATH)
 raw  = json.load(open(SPEC_PATH))
 spec  = raw if isinstance(raw, list) else [raw]
 M    = len(spec)
 N = len(df)
+
+BRS = [300, 750, 1200, 1850, 2850, 4300]
 
 model = load_ppo2_model(MODEL_PATH, S_DIM, A_DIM, ACTOR_LR_RATE)
 
@@ -63,6 +68,8 @@ adv_feats = np.zeros((N, 1))
 for i in tqdm(range(N), desc="PGD attack"):
     state0, low_bound, high_bound = row_to_state(df.iloc[i], spec=spec)
     x0 = state0[3, 7].astype(np.float32)
+    #added to make sure the original data is matched
+    df.iloc[i]["Last1_downloadtime"] = x0
 
     state0 = np.expand_dims(state0, axis=0)
     pred = model.predict(state0)
@@ -106,24 +113,49 @@ for i in tqdm(range(N), desc="PGD attack"):
     adv_feats[i] = x_adv
 
 
-## Write to CSV
-
-adv_feats = adv_feats.reshape(-1, 1)  # shape (N, 1)
-df.loc[:, FEATURES] = adv_feats
-df.to_csv(OUT_CSV, index=False)
-print(f"Adversarial CSV written →  {OUT_CSV}")
-
-
 ## Verify attack effectiveness
+NUM_TOTAL_FEATURES = len(df.columns)
+
+def write_success_header_to_csv(df):
+    df.head(0).to_csv(OUT_SUCCESSFUL_CSV, mode='w', header=True, index=False)
+
+def qoe(last_br, cur_br):
+    last_q = np.log(last_br / BRS[0])
+    cur_q = np.log(cur_br / BRS[0])
+    qoe_2 =  last_q + cur_q - np.abs(last_q - cur_q)
+    return round(qoe_2, 5)
+
+def write_success_row_to_csv(df, i, adv_br):
+    row = df.iloc[i].copy()
+    # write original row to CSV
+    pd.DataFrame([row]).to_csv(OUT_SUCCESSFUL_CSV, mode='a', header=False, index=False)
+    # write row to CSV
+    row[FEATURES] = adv_feats[i]
+    row["qoe_2"] = qoe(adv_br, row["br"])
+    row["br"] = adv_br
+    
+    pd.DataFrame([row]).to_csv(OUT_SUCCESSFUL_CSV, mode='a', header=False, index=False)
+    #write an empty row
+    dash_line = ['---'] * NUM_TOTAL_FEATURES
+    pd.DataFrame([dash_line]).to_csv(OUT_SUCCESSFUL_CSV, mode='a', header=False, index=False)
+
+    pass
 
 success = unchanged = higher = 0
 orig_preds, adv_preds = [], []
 
+write_success_header_to_csv(df)
+
 for i in tqdm(range(N), desc="Verifying attack effectiveness"):
-    state_orig, _, _ = row_to_state(df.iloc[i], spec=spec)
+    state_orig = row_to_state_for_rand(df.iloc[i])
+    
+    x_adv_prev = state_orig[3, 7].astype(np.float32)
+
     state_orig_flat = state_orig.flatten()
     state_adv = state_orig_flat.copy()
+    thrpt_times = x_adv_prev / adv_feats[i]
     state_adv[ATTACK_IDXS[0]] = adv_feats[i]
+    state_adv[ATTACK_IDXS[0] - 8] *= thrpt_times
     state_adv = state_adv.reshape(state_orig.shape)
 
     state_orig = np.expand_dims(state_orig, axis=0)
@@ -137,6 +169,7 @@ for i in tqdm(range(N), desc="Verifying attack effectiveness"):
 
     if p_adv < p_orig:
         success += 1
+        write_success_row_to_csv(df, i, BRS[p_adv])
     elif p_adv == p_orig:
         unchanged += 1
     else:
@@ -151,3 +184,11 @@ print(f"Accidentally higher br  : {higher}")
 print("\nBit-rate histogram (index 0-5)")
 print("Original    :", dict(sorted(C.Counter(orig_preds).items())))
 print("Adversarial :", dict(sorted(C.Counter(adv_preds).items()))) 
+
+
+## Write to CSV
+
+adv_feats = adv_feats.reshape(-1, 1)  # shape (N, 1)
+df.loc[:, FEATURES] = adv_feats
+df.to_csv(OUT_CSV, index=False)
+print(f"Adversarial CSV written →  {OUT_CSV}")
