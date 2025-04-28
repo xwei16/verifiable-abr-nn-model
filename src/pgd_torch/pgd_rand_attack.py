@@ -22,7 +22,7 @@ from tqdm import tqdm
 
 import ppo2 as network
 
-from utils import load_ppo2_model, row_to_state, row_to_state_for_rand
+from utils import load_ppo2_model, row_to_state_no_change
 
 
 MODEL_PATH   = "pensieve_rl_model/nn_model_ep_155400.pth"
@@ -51,7 +51,7 @@ A_DIM = 6
 ACTOR_LR_RATE = 1e-4
 
 NUM_CONT_CHUNKS_TO_LOG = 1
-
+BRS = [300, 750, 1200, 1850, 2850, 4300]
 
 ALL_FEATURES = [
     'Last1_chunk_bitrate', 'Last1_buffer_size', 'Last8_throughput', 'Last7_throughput',
@@ -72,7 +72,9 @@ raw  = json.load(open(SPEC_PATH))
 spec  = raw if isinstance(raw, list) else [raw]
 
 M    = len(spec)
-N = 30000
+N = 1000 #30000
+
+ORIGIN_BAD_COUNT = 0
 
 model = load_ppo2_model(MODEL_PATH, S_DIM, A_DIM, ACTOR_LR_RATE)
 
@@ -80,11 +82,41 @@ model = load_ppo2_model(MODEL_PATH, S_DIM, A_DIM, ACTOR_LR_RATE)
 
 adv_feats = np.zeros((N, 1))
 
-def generate_random_data_row(spec):
-    """Generate a random data row from the spec."""
-    random.seed(int(time.time()))
-    chosen = spec[random.randint(0, len(spec) - 1)]
+def write_success_header_to_csv(df):
+    df.head(0).to_csv(OUT_SUCCESSFUL_CSV, mode='w', header=True, index=False)
 
+def qoe(last_br, cur_br):
+    last_q = np.log(last_br / BRS[0])
+    cur_q = np.log(cur_br / BRS[0])
+    qoe_2 =  last_q + cur_q - np.abs(last_q - cur_q)
+    return round(qoe_2, 5)
+
+def write_success_row_to_csv(df, i, adv_br):
+    row = df.iloc[i].copy()
+    # write original row to CSV
+    pd.DataFrame([row]).to_csv(OUT_SUCCESSFUL_CSV, mode='a', header=False, index=False)
+    # write row to CSV
+    row[FEATURES] = adv_feats[i]
+    row["qoe_2"] = qoe(adv_br, row["br"])
+    row["br"] = adv_br
+    
+    pd.DataFrame([row]).to_csv(OUT_SUCCESSFUL_CSV, mode='a', header=False, index=False)
+    #write an empty row
+    dash_line = ['---'] * NUM_TOTAL_FEATURES
+    pd.DataFrame([dash_line]).to_csv(OUT_SUCCESSFUL_CSV, mode='a', header=False, index=False)
+
+    pass
+
+def generate_random_data_row(spec, row_idx):
+    """Generate a random data row from the spec."""
+    random.seed(time.time_ns())
+    
+    chosen = spec[random.randint(0, len(spec) - 1)]
+    #chosen = spec[0]
+
+    #row = [0.1744186046511628,1.0029800977020775,0.23558863898635715,0.23429914039990793,0.20021344242615774,0.05223083450828827,0.09975290422382835,0.09943758098873846,0.07178004200220454,0.06812414514960827,0.16058796452485505,0.16674410300147796,0.2831498190782491,1.9624518919707221,0.37301470357703803,0.1732865967641698,0.2326900282321794,0.5780681711824233,0.16006399999999998,0.393804,0.6386609999999999,0.9820639999999999,1.483527,2.2465059999999997,0.041666666666666664]
+    #0.1744186046511628,1.0029800977020775,0.23558863898635715,0.23429914039990793,0.20021344242615774,0.05223083450828827,0.09975290422382835,0.09943758098873846,0.07178004200220454,0.06812414514960827,0.16058796452485505,0.16674410300147796,0.2831498190782491,1.9624518919707221,0.37301470357703803,0.1732865967641698,0.2326900282321794,0.5780681711824233,0.16006399999999998,0.393804,0.6386609999999999,0.9820639999999999,1.483527,2.2465059999999997,0.041666666666666664,750.0,1.83258146374831
+    
     row = []
     for i in range(NUM_TOTAL_FEATURES-2):
         row.append(random.uniform(
@@ -92,28 +124,42 @@ def generate_random_data_row(spec):
         chosen[f"{ALL_FEATURES[i]}_u"]
     ))
     #br
-    row.append(random.choice(chosen["cur_br"]))
+    #row.append(random.choice(chosen["cur_br"]))
+    row.append(0)
     #qoe_2
-    row.append(random.choice(chosen["qoe_2"]))
-        
-    df.loc[len(df)] = row
+    #row.append(random.choice(chosen["qoe_2"]))
+    row.append(0)
+
+    #print(f"Row {row_idx} generated: {len(row)} and {len(df.columns)}")
+    df.loc[row_idx] = row
+    
+    state0 = row_to_state_no_change(df.iloc[row_idx])
+    state0 = np.expand_dims(state0, axis=0)
+    pred_br = BRS[np.argmax(model.predict(state0))]
+    #print(np.argmax(model.predict(state0)))
+    pred_qoe = qoe(df.iloc[row_idx]["Last1_chunk_bitrate"], pred_br)
+    df.at[row_idx, "br"] = pred_br
+    df.at[row_idx, "qoe_2"] = pred_qoe 
+
 
     return chosen["Last1_downloadtime_l"], chosen["Last1_downloadtime_u"]
 
 
 for i in tqdm(range(N), desc="PGD attack"):
     # Generate random data row
-    low_bound, high_bound = generate_random_data_row(spec)
+    low_bound, high_bound = generate_random_data_row(spec, i)
 
-    state0 = row_to_state_for_rand(df.iloc[i])
+    state0 = row_to_state_no_change(df.iloc[i])
     x0 = state0[3, 7].astype(np.float32)
 
     state0 = np.expand_dims(state0, axis=0)
+    #print(state0)
     pred = model.predict(state0)
     pred = np.argmax(pred)
 
     
     if pred == TARGET_CLASS:
+        ORIGIN_BAD_COUNT += 1
         adv_feats[i] = x0
         continue
     
@@ -142,7 +188,7 @@ for i in tqdm(range(N), desc="PGD attack"):
 
         x_perturbation = ALPHA * torch.sign(grad)
         x_adv_prev = x_adv
-        x_adv = x_perturbation
+        x_adv -= x_perturbation
         x_adv = torch.clamp(x_adv, x0 - EPS, x0 + EPS)
         x_adv = torch.clamp(x_adv, low_bound, high_bound)
     
@@ -151,34 +197,19 @@ for i in tqdm(range(N), desc="PGD attack"):
 
 ## Verify attack effectiveness
 
-def write_success_row_to_csv(df, i):
-    if i == 0:
-        #write header
-        df.iloc[i].to_csv(OUT_SUCCESSFUL_CSV, mode='w', header=True, index=False)
-    else:
-        row = df.iloc[i].copy()
-        # write original row to CSV
-        row.to_csv(OUT_SUCCESSFUL_CSV, mode='a', header=False, index=False)
-        # write row to CSV
-        row[FEATURES] = adv_feats[i]
-        row.to_csv(OUT_SUCCESSFUL_CSV, mode='a', header=False, index=False)
-        #write an empty row
-        dash_line = ['---'] * NUM_TOTAL_FEATURES
-        pd.DataFrame([dash_line]).to_csv(OUT_SUCCESSFUL_CSV, mode='a', header=False, index=False)
-
-    pass
 
 success = unchanged = higher = 0
 orig_preds, adv_preds = [], []
+write_success_header_to_csv(df)
 
 for i in tqdm(range(N), desc="Verifying attack effectiveness"):
-    state_orig = row_to_state_for_rand(df.iloc[i])
+    state_orig = row_to_state_no_change(df.iloc[i])
     
-    x_adv_prev = state_orig[3, 7].astype(np.float32)
+    x_adv_orig = state_orig[3, 7].astype(np.float32)
 
     state_orig_flat = state_orig.flatten()
     state_adv = state_orig_flat.copy()
-    thrpt_times = x_adv_prev / adv_feats[i]
+    thrpt_times = x_adv_orig / adv_feats[i]
     state_adv[ATTACK_IDXS[0]] = adv_feats[i]
     state_adv[ATTACK_IDXS[0] - 8] *= thrpt_times
     state_adv = state_adv.reshape(state_orig.shape)
@@ -194,7 +225,7 @@ for i in tqdm(range(N), desc="Verifying attack effectiveness"):
 
     if p_adv < p_orig:
         success += 1
-        write_success_row_to_csv(df, i)
+        write_success_row_to_csv(df, i, BRS[p_adv])
     elif p_adv == p_orig:
         unchanged += 1
     else:
@@ -209,6 +240,8 @@ print(f"Accidentally higher br  : {higher}")
 print("\nBit-rate histogram (index 0-5)")
 print("Original    :", dict(sorted(C.Counter(orig_preds).items())))
 print("Adversarial :", dict(sorted(C.Counter(adv_preds).items()))) 
+
+print("\nOriginally Bad Samples :", ORIGIN_BAD_COUNT)
 
 
 ## Write to CSV

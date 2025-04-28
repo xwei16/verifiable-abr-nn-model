@@ -21,7 +21,7 @@ from tqdm import tqdm
 
 import ppo2 as network
 
-from utils import load_ppo2_model, row_to_state, row_to_state_for_rand
+from utils import load_ppo2_model, row_to_state, row_to_state_no_change
 
 
 MODEL_PATH   = "pensieve_rl_model/nn_model_ep_155400.pth"
@@ -147,7 +147,7 @@ orig_preds, adv_preds = [], []
 write_success_header_to_csv(df)
 
 for i in tqdm(range(N), desc="Verifying attack effectiveness"):
-    state_orig = row_to_state_for_rand(df.iloc[i])
+    state_orig = row_to_state_no_change(df.iloc[i])
     
     x_adv_prev = state_orig[3, 7].astype(np.float32)
 
