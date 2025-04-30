@@ -72,7 +72,7 @@ raw  = json.load(open(SPEC_PATH))
 spec  = raw if isinstance(raw, list) else [raw]
 
 M    = len(spec)
-N = 1000 #30000
+N = 30000
 
 ORIGIN_BAD_COUNT = 0
 
@@ -97,7 +97,7 @@ def write_success_row_to_csv(df, i, adv_br):
     pd.DataFrame([row]).to_csv(OUT_SUCCESSFUL_CSV, mode='a', header=False, index=False)
     # write row to CSV
     row[FEATURES] = adv_feats[i]
-    row["qoe_2"] = qoe(adv_br, row["br"])
+    row["qoe_2"] = qoe(row["Last1_chunk_bitrate"]*4300, adv_br)
     row["br"] = adv_br
     
     pd.DataFrame([row]).to_csv(OUT_SUCCESSFUL_CSV, mode='a', header=False, index=False)
@@ -111,8 +111,8 @@ def generate_random_data_row(spec, row_idx):
     """Generate a random data row from the spec."""
     random.seed(time.time_ns())
     
-    chosen = spec[random.randint(0, len(spec) - 1)]
-    #chosen = spec[0]
+    #chosen = spec[random.randint(0, len(spec) - 1)]
+    chosen = spec[0]
 
     #row = [0.1744186046511628,1.0029800977020775,0.23558863898635715,0.23429914039990793,0.20021344242615774,0.05223083450828827,0.09975290422382835,0.09943758098873846,0.07178004200220454,0.06812414514960827,0.16058796452485505,0.16674410300147796,0.2831498190782491,1.9624518919707221,0.37301470357703803,0.1732865967641698,0.2326900282321794,0.5780681711824233,0.16006399999999998,0.393804,0.6386609999999999,0.9820639999999999,1.483527,2.2465059999999997,0.041666666666666664]
     #0.1744186046511628,1.0029800977020775,0.23558863898635715,0.23429914039990793,0.20021344242615774,0.05223083450828827,0.09975290422382835,0.09943758098873846,0.07178004200220454,0.06812414514960827,0.16058796452485505,0.16674410300147796,0.2831498190782491,1.9624518919707221,0.37301470357703803,0.1732865967641698,0.2326900282321794,0.5780681711824233,0.16006399999999998,0.393804,0.6386609999999999,0.9820639999999999,1.483527,2.2465059999999997,0.041666666666666664,750.0,1.83258146374831
@@ -137,7 +137,7 @@ def generate_random_data_row(spec, row_idx):
     state0 = np.expand_dims(state0, axis=0)
     pred_br = BRS[np.argmax(model.predict(state0))]
     #print(np.argmax(model.predict(state0)))
-    pred_qoe = qoe(df.iloc[row_idx]["Last1_chunk_bitrate"], pred_br)
+    pred_qoe = qoe(df.iloc[row_idx]["Last1_chunk_bitrate"]*4300, pred_br)
     df.at[row_idx, "br"] = pred_br
     df.at[row_idx, "qoe_2"] = pred_qoe 
 
