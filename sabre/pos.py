@@ -1,4 +1,7 @@
+# run inside the sabre directory:
 # python3 ../sabre/sabre.py -m ../sabre/traces/abr_test/two_chunk.json -n ../sabre/traces/abr_test/network.json -a ../sabre/pos.py
+# python3 ../sabre/sabre.py -m ../sabre/traces/abr_test/pensieve_big.json -n ../sabre/traces/abr_test/network.json -a ../sabre/pos.py 
+# python3 ../sabre/sabre_new.py -m ../sabre/traces/abr_test/pensieve_big.json -n ../sabre/traces/abr_test/network.json -a ../sabre/pos.py -p starting_bitrate=3
 
 import os
 from collections import deque
@@ -10,21 +13,20 @@ import tensorflow.compat.v1 as tf
 tf.disable_eager_execution()
 
 # -----------------------------------------------------------------------------
-#  Pensieve‑to‑Sabre 适配器 (pos.py)
+#  Pensieve‑to‑Sabre self-defined ABR algorithm (pos.py)
 # -----------------------------------------------------------------------------
-#  * 占位符 / Softmax 名称取自用户提供的 ckpt。
-#  * 状态矩阵严格按 Pensieve 训练时 6×8 排列与归一。
+#  * Pensieve state: 6×8 matrix
 # -----------------------------------------------------------------------------
 
-from sabre import Abr, AbrInput  # Sabre 基类
+from sabre import Abr, AbrInput  # Sabre classes
 
-try:  # 运行时 sabre 已加载并定义这些符号
+try: # Attempt to import Sabre's get_buffer_level and manifest
     from sabre import get_buffer_level, manifest
 except Exception:
     get_buffer_level = None  # type: ignore
     manifest = None  # type: ignore
 
-# ------------------------------ 模型参数 --------------------------------------
+# ------------------------------ pensieve input parameters --------------------------------------
 _S_INFO = 6            # state rows
 _S_LEN = 8             # history window
 _A_DIM = 6             # bitrate choices
@@ -33,21 +35,21 @@ _CHUNK_REMAIN_CAP = 48.0
 _MODEL_CKPT = os.path.expanduser(
     "../pensieve_rl_model/pretrain_linear_reward.ckpt")
 
-# ckpt 内 tensor 名称（已确认）
+# tensor names in the Pensieve model
 _TENSOR_IN  = "actor/InputData/X:0"
 _TENSOR_OUT = "actor/FullyConnected_4/Softmax:0"
 
-# --------------------------- Sabre ABR 实现 ----------------------------------
+# --------------------------- Sabre ABR Implementation ----------------------------------
 class pos(Abr):
     """Sabre wrapper for a pre‑trained Pensieve policy."""
 
     # ------------------------------------------------------------------
-    #  初始化
+    #  Initialization
     # ------------------------------------------------------------------
     def __init__(self, config):
         super().__init__(config)
 
-        # 1) 创建 Session 并载入图
+        # 1) Create session and load graph
         self._sess = tf.Session(config=tf.ConfigProto(intra_op_parallelism_threads=1,
                                                       inter_op_parallelism_threads=1))
         saver = tf.train.import_meta_graph(_MODEL_CKPT + ".meta")
@@ -56,7 +58,7 @@ class pos(Abr):
         self._s_in  = g.get_tensor_by_name(_TENSOR_IN)
         self._q_out = g.get_tensor_by_name(_TENSOR_OUT)
 
-        # 2) 历史轨迹缓存
+        # 2) History buffer
         self._last_q_hist = deque([0.0] * _S_LEN, maxlen=_S_LEN)   # row0
         self._buffer_hist = deque([0.0] * _S_LEN, maxlen=_S_LEN)   # row1 (sec/10)
         self._thrpt_hist  = deque([1.0] * _S_LEN, maxlen=_S_LEN)   # row2 (KB/ms)
@@ -64,22 +66,25 @@ class pos(Abr):
         self._next_sizes  = np.zeros(_A_DIM, dtype=np.float32)      # row4 (MB)
         self._remain_hist = deque([1.0] * _S_LEN, maxlen=_S_LEN)   # row5 (remain/48)
 
-        self._last_quality = 0  # 上一次决策
+        self._last_quality = 0  # Last decision
+        
+        # 3) User-specified start bitrate
+        self._starting_bitrate = int(config.get("starting_bitrate", 0))  
 
     # ------------------------------------------------------------------
-    #  Sabre 接口
+    #  Sabre interface
     # ------------------------------------------------------------------
     def get_first_quality(self):
-        return 0  # 启动码率
+        return self._starting_bitrate  # Start bitrate - set it here # use index 0~5
 
     def get_quality_delay(self, segment_index: int):
-        """返回 (quality_index, extra_delay_ms)."""
-        # 拼 (6,8) 状态矩阵
+        """Return (quality_index, extra_delay_ms)."""
+        # Assemble (6,8) state matrix
         state_mat = np.vstack([
             np.array(self._last_q_hist),                    # row0 last bitrate (0~1)
-            np.array(self._buffer_hist),                    # row1 buffer /10
+            np.array(self._buffer_hist),                    # row1 buffer size /10
             np.array(self._thrpt_hist),                     # row2 throughput KB/ms
-            np.array(self._delay_hist),                     # row3 delay /10
+            np.array(self._delay_hist),                     # row3 downloading time /10
             np.pad(self._next_sizes, (0, _S_LEN - _A_DIM)), # row4 next sizes MB
             np.array(self._remain_hist),                    # row5 remain /48
         ], dtype=np.float32)
@@ -90,27 +95,27 @@ class pos(Abr):
         return quality, 0.0
 
     # ------------------------------------------------------------------
-    #  下载完成回调
+    #  Download complete callback
     # ------------------------------------------------------------------
     def report_download(self, metrics: Any, is_replacement: bool):  # type: ignore
         """metrics ≡ sabre.DownloadProgress namedtuple."""
         # -----------------------------------------------------------
-        # 基本度量
-        delay_ms   = max(metrics.time, 1e-3)   # 避免除零
+        # Basic metrics
+        delay_ms   = max(metrics.time, 1e-3)   # Avoid division by zero
         bytes_dl   = metrics.downloaded
         seg_idx    = metrics.index
 
         # throughput KB/ms
         kb_per_ms = bytes_dl / 1000.0 / delay_ms
 
-        # buffer level (秒)
+        # buffer level (seconds)
         if get_buffer_level is not None:
             buffer_ms = get_buffer_level()
             buffer_sec = buffer_ms / 1000.0
         else:
             buffer_sec = 0.0  # Fallback
 
-        # remaining segments (保守估算)
+        # remaining segments (conservative estimate)
         if manifest is not None and hasattr(manifest, 'segments'):
             remain = max(len(manifest.segments) - seg_idx - 1, 0)
         else:
@@ -124,7 +129,7 @@ class pos(Abr):
             next_sizes_mb = np.zeros(_A_DIM, dtype=np.float32)
 
         # -----------------------------------------------------------
-        #  更新历史
+        #  Update history
         self._last_q_hist.append(float(self._last_quality) / (_A_DIM - 1))
         self._buffer_hist.append(buffer_sec / _BUFFER_NORM)
         self._thrpt_hist.append(kb_per_ms)
@@ -132,7 +137,7 @@ class pos(Abr):
         self._remain_hist.append(min(remain, _CHUNK_REMAIN_CAP) / _CHUNK_REMAIN_CAP)
         self._next_sizes = next_sizes_mb
 
-    # 其它回调保留空实现
+    # Other callbacks remain empty
     def report_delay(self, delay):
         pass
 

@@ -1280,6 +1280,11 @@ if __name__ == '__main__':
                         help = 'Specify at what quality index we are ramped up (None matches network).')
     parser.add_argument('-v', '--verbose', action = 'store_true',
                         help = 'Run in verbose mode.')
+    
+    #added
+    parser.add_argument('-p', '--params', nargs='+', default=[],
+                    help='ABR config params, e.g., -p starting_bitrate=3')
+
     args = parser.parse_args()
 
 
@@ -1360,7 +1365,20 @@ if __name__ == '__main__':
         replacer = NoReplace()
 
     
-    config = {'window_size': args.window_size, 'half_life': args.half_life}
+    # config = {'window_size': args.window_size, 'half_life': args.half_life}
+    config = {
+        'window_size': args.window_size,
+        'half_life': args.half_life,
+        'buffer_size': args.max_buffer * 1000,
+        'gp': args.gamma_p,
+        'abr_osc': args.abr_osc,
+        'abr_basic': args.abr_basic,
+        'no_ibr': args.no_insufficient_buffer_rule,
+    }
+
+    # Add support for -p starting_bitrate=3 style config
+    config.update(dict(kv.split('=') for kv in args.params))
+
 
     throughput_history = average_list[args.moving_average](config)
 
