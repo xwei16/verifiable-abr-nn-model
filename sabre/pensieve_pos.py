@@ -1,4 +1,4 @@
-# python3 ../sabre/sabre_new.py -m ../sabre/traces/abr_test/pensieve_big.json -n ../sabre/traces/abr_test/network.json -a ../sabre/new_pos.py -p starting_bitrate=3
+# python3 ../sabre/sabre_new.py -m ../sabre/traces/abr_test/pensieve_big.json -n ../sabre/traces/abr_test/network.json -a ../sabre/pensieve_pos.py -p starting_bitrate=3
 # generated output are in logs
 import os
 import csv
@@ -11,10 +11,10 @@ import tensorflow.compat.v1 as tf
 
 tf.disable_eager_execution()
 
-from sabre import Abr, AbrInput  # Sabre classes
+from sabre_new import Abr, AbrInput  # Sabre classes
 
 try:  # Attempt to import Sabre's get_buffer_level and manifest
-    from sabre import get_buffer_level, manifest
+    from sabre_new import get_buffer_level, manifest
 except Exception:
     get_buffer_level = None  # type: ignore
     manifest = None  # type: ignore
@@ -36,14 +36,14 @@ _TENSOR_OUT = "actor/FullyConnected_4/Softmax:0"
 BRS = [300, 750, 1200, 1850, 2850, 4300]
 
 # QoE formula constants
-R_MIN = 300  # kbps for log normalization
+R_MIN = 260  # kbps for log normalization
 
 def g(R_kbps):
     """Log-normalized video quality function."""
     return np.log(R_kbps / R_MIN)
 
 # --------------------------- Sabre ABR Implementation ----------------------------------
-class new_pos(Abr):
+class pensieve_pos(Abr):
     """Sabre wrapper for a pre-trained Pensieve policy with QoE logging."""
 
     def __init__(self, config):
@@ -67,11 +67,16 @@ class new_pos(Abr):
         self._remain_hist = deque([1.0] * _S_LEN, maxlen=_S_LEN)
 
         self._last_quality = 0  # Last decision
-        self._starting_bitrate = int(config.get("starting_bitrate", 0))
+        self._starting_bitrate = int(config.get("starting_bitrate", 3))
 
         # 3) QoE tracking
         self._cumulative_qoe = 0.0
-        self._last_gR = None  # For smoothness penalty
+        # QoE calculation
+        bitrate_kbps = BRS[self._last_quality]
+        gR = g(bitrate_kbps)
+        # Add quality term
+        self._cumulative_qoe += gR
+        self._last_gR = gR  # For smoothness penalty
 
         # 🔥 CHANGED: Setup CSV logging with avg QoE
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")

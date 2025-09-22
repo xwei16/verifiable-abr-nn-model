@@ -1200,7 +1200,7 @@ class AbrInput(Abr):
         self.abr_module = SourceFileLoader(self.name, path).load_module()
         self.abr_class = getattr(self.abr_module, self.name)
         self.abr_class.session = session_info
-        self.abr = self.abr_class(config)
+        self.abr = self.abr_class(config) # load the customized abr
 
     def get_quality_delay(self, segment_index):
         return self.abr.get_quality_delay(segment_index)
@@ -1347,6 +1347,12 @@ if __name__ == '__main__':
               'abr_osc': args.abr_osc,
               'abr_basic': args.abr_basic,
               'no_ibr': args.no_insufficient_buffer_rule}
+    # added
+    for p in args.params:
+        k, v = p.split("=")
+        config[k] = int(v)
+
+        
     if args.abr[-3:] == '.py':
         abr = AbrInput(args.abr, config)
     else:
