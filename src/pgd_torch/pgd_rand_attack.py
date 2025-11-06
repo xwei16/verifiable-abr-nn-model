@@ -25,10 +25,10 @@ import ppo2 as network
 from utils import load_ppo2_model, row_to_state_no_change
 
 
-MODEL_PATH   = "pensieve_rl_model/nn_model_ep_155400.pth"
-#CSV_PATH     = "data/pensieve_big_testing_data.csv"
+MODEL_PATH   = "../../pensieve_rl_model/nn_model_ep_155400.pth"
+CSV_PATH     = "../../data/pensieve_big_testing_data.csv"
 # CSV_PATH     = "../../src/filtered_good_testing_data.csv"
-SPEC_PATH    = "data/full_spec_no_300.json"
+SPEC_PATH    = "../../data/full_spec_no_300.json"
 OUT_CSV      = "results/rand_pgd_attacked_torch_data.csv"
 OUT_SUCCESSFUL_CSV = "results/rand_pgd_successful_attack.csv"
 
