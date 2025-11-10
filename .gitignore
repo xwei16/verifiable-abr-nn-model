@@ -2,3 +2,4 @@ puffer_data_original/src/network_pred/output/old_data/
 src/network_pred/output/debug/pred_vs_true.csv
 src/network/output/network_data_training.txt
 puffer_data_originals
+src/network/output/
