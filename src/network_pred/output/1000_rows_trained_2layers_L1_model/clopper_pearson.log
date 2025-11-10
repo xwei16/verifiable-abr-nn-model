@@ -1,0 +1,49 @@
+Found 10 CSV files
+Loading: 2025-09-20T11_2025-09-21T11_training_data.csv with 100 rows
+Loading: 2025-09-30T11_2025-10-01T11_training_data.csv with 100 rows
+Loading: 2025-10-28T11_2025-10-29T11_training_data.csv with 100 rows
+Loading: 2025-10-29T11_2025-10-30T11_training_data.csv with 100 rows
+Loading: 2025-10-30T11_2025-10-31T11_training_data.csv with 100 rows
+Loading: 2025-10-31T11_2025-11-01T11_training_data.csv with 100 rows
+Loading: 2025-11-01T11_2025-11-02T11_training_data.csv with 100 rows
+Loading: 2025-11-02T11_2025-11-03T11_training_data.csv with 100 rows
+Loading: 2025-11-03T11_2025-11-04T11_training_data.csv with 100 rows
+Loading: 2025-11-04T11_2025-11-05T11_training_data.csv with 100 rows
+Total rows loaded: 1000
+Found 9 CSV files
+Loading: 2025-10-10T11_2025-10-11T11_training_data.csv with None rows
+Loading: 2025-10-11T11_2025-10-12T11_training_data.csv with None rows
+Loading: 2025-10-12T11_2025-10-13T11_training_data.csv with None rows
+Loading: 2025-10-13T11_2025-10-14T11_training_data.csv with None rows
+Loading: 2025-10-14T11_2025-10-15T11_training_data.csv with None rows
+Loading: 2025-10-15T11_2025-10-16T11_training_data.csv with None rows
+Loading: 2025-10-16T11_2025-10-17T11_training_data.csv with None rows
+Loading: 2025-10-17T11_2025-10-18T11_training_data.csv with None rows
+Loading: 2025-10-18T11_2025-10-19T11_training_data.csv with None rows
+Total rows loaded: 12492
+Training data shape: X=(1000, 19), y=(1000,)
+Testing data shape: X=(12492, 19), y=(12492,)
+Normalization parameters loaded from normalization_params.npz
+=== BEFORE NORMALIZATION ===
+X_test shape: (1000, 19)
+y_test shape: (1000,)
+
+=== AFTER NORMALIZATION ===
+X_test shape: (1000, 19)
+
+=== Clopper-Pearson Analysis ===
+success = 390, total = 1000
+Observed probability (relative error ≤ 0.3): 0.3900
+90% CI: [0.3644, 0.4161]
+Normalization parameters loaded from normalization_params.npz
+=== BEFORE NORMALIZATION ===
+X_test shape: (12492, 19)
+y_test shape: (12492,)
+
+=== AFTER NORMALIZATION ===
+X_test shape: (12492, 19)
+
+=== Clopper-Pearson Analysis ===
+success = 2444, total = 12492
+Observed probability (relative error ≤ 0.3): 0.1956
+90% CI: [0.1898, 0.2016]

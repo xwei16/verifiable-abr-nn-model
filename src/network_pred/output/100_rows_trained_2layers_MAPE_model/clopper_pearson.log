@@ -1,0 +1,32 @@
+Found 1 CSV files
+Loading: network_data_training_1000_new.csv
+Total rows loaded: 141
+Found 1 CSV files
+Loading: network_data_testing_1000_new.csv
+Total rows loaded: 102
+Training data shape: X=(141, 19), y=(141,)
+Testing data shape: X=(102, 19), y=(102,)
+Normalization parameters loaded from normalization_params.npz
+=== BEFORE NORMALIZATION ===
+X_test shape: (141, 19)
+y_test shape: (141,)
+
+=== AFTER NORMALIZATION ===
+X_test shape: (141, 19)
+
+=== Clopper-Pearson Analysis ===
+success = 64, total = 141
+Observed probability (relative error ≤ 0.3): 0.4539
+90% CI: [0.3826, 0.5266]
+Normalization parameters loaded from normalization_params.npz
+=== BEFORE NORMALIZATION ===
+X_test shape: (102, 19)
+y_test shape: (102,)
+
+=== AFTER NORMALIZATION ===
+X_test shape: (102, 19)
+
+=== Clopper-Pearson Analysis ===
+success = 1, total = 102
+Observed probability (relative error ≤ 0.3): 0.0098
+90% CI: [0.0005, 0.0457]

@@ -64,8 +64,8 @@ def train_model(X_train, y_train, epochs=200, batch_size=64, lr=1e-3):
     model = Net().to(device)
 
     # Use L1Loss for better balance with varying magnitude targets
-    # criterion = nn.L1Loss()
-    criterion = mape_loss
+    criterion = nn.L1Loss()
+    # criterion = mape_loss
     optimizer = optim.Adam(model.parameters(), lr=lr)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=10)
 
@@ -107,10 +107,10 @@ def save_normalization_params(X_mean, X_std, y_mean, y_std, filepath='normalizat
 Example usage
 '''
 if __name__ == "__main__":
-    X_train, y_train = load_network_data("../../puffer_data_cleaned/training_data")
+    X_train, y_train = load_network_data("../../puffer_data_cleaned/training_data", 100)
     
     print(f"Training data shape: X={X_train.shape}, y={y_train.shape}")
 
     model, X_mean, X_std, y_mean, y_std = train_model(X_train, y_train, epochs=500, batch_size=32, lr=1e-2)
-    torch.save(model, "output/nn_network_model_10days_1000_data.pt")
+    torch.save(model, "output/nn_network_model_10days_100_data.pt")
     save_normalization_params(X_mean, X_std, y_mean, y_std, filepath='normalization_params.npz')

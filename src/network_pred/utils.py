@@ -15,7 +15,7 @@ X : numpy array
 y : numpy array
     Target variable (downloading_time_9)
 """
-def load_network_data(dir_path):
+def load_network_data(dir_path, nrows=None):
     # Get all CSV files in the directory
     dir_path = Path(dir_path)
     csv_files = sorted(dir_path.glob('*.csv'))
@@ -28,8 +28,8 @@ def load_network_data(dir_path):
     # Load and combine all files
     dfs = []
     for csv_file in csv_files:
-        print(f"Loading: {csv_file.name}")
-        df = pd.read_csv(csv_file)
+        print(f"Loading: {csv_file.name} with {nrows} rows")
+        df = pd.read_csv(csv_file, nrows=nrows)
         dfs.append(df)
     
     # Concatenate all dataframes

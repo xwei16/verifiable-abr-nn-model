@@ -44,13 +44,43 @@ Clopper-Pearson evaluation
 def clopper_pearson_eval(model, X_test, y_test, eps_tolerance=0.01, alpha=0.05, output_file="output/pred_vs_true.csv", normalized_param_file="normalization_params.npz"):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     X_mean, X_std, y_mean, y_std = load_normalization_params(normalized_param_file)
+    print(f"=== BEFORE NORMALIZATION ===")
+    print(f"X_test shape: {X_test.shape}")
+    print(f"y_test shape: {y_test.shape}")
+
     X_test = (X_test - X_mean) / X_std
+    print(f"\n=== AFTER NORMALIZATION ===")
+    print(f"X_test shape: {X_test.shape}")
 
     model.eval()
     with torch.no_grad():
         X_test_t = torch.tensor(X_test, dtype=torch.float32).to(device)
-        y_pred_norm = model(X_test_t).cpu().numpy().flatten()
+        # print(f"\n=== TENSOR CONVERSION ===")
+        # print(f"X_test_t shape: {X_test_t.shape}")
+
+        y_pred_norm = model(X_test_t)
+
+        # print(f"\n=== MODEL OUTPUT ===")
+        # print(f"y_pred_norm shape (raw): {y_pred_norm.shape}")
+        # print(f"y_pred_norm first 5 values: {y_pred_norm[:5].cpu().numpy()}")
+
+        y_pred_norm = y_pred_norm.cpu().numpy().reshape(-1)
+        # print(f"\n=== AFTER CPU/NUMPY ===")
+        # print(f"y_pred_norm_np shape: {y_pred_norm.shape}")
+        
+        y_pred_norm.flatten()
+
+        # print(f"\n=== AFTER FLATTEN ===")
+        # print(f"y_pred_norm_flat shape: {y_pred_norm.shape}")
+        # print(f"y_pred_norm_flat first 5: {y_pred_norm[:5]}")
+        
         y_pred = y_pred_norm * y_std + y_mean
+
+        # print(f"\n=== FINAL DENORMALIZATION ===")
+        # print(f"y_pred shape: {y_pred.shape}")
+        # print(f"y_test shape: {y_test.shape}")
+        # print(f"y_pred first 5: {y_pred[:5]}")
+        # print(f"y_test first 5: {y_test[:5]}")
 
     # Put them into a DataFrame
     df = pd.DataFrame({
@@ -82,20 +112,20 @@ Load model + evaluate
 '''
 if __name__ == "__main__":
     # Load saved model
-    model = torch.load("output/nn_network_model_10days_1000_data.pt")
+    model = torch.load("output/nn_network_model_10days_100_data.pt")
     #"output/10000_rows_trained_2layers_model/nn_network_model_10days_1000_data.pt"
     # Load data (same file or a new test set)
-    X_train, y_train = load_network_data("../../puffer_data_cleaned/training_data")
-    X_test, y_test = load_network_data("../../puffer_data_cleaned/testing_data")
+    X_train, y_train = load_network_data("../../puffer_data_cleaned/training_data", nrows=100)
+    X_test, y_test = load_network_data("../../puffer_data_cleaned/testing_data") 
     
     print(f"Training data shape: X={X_train.shape}, y={y_train.shape}")
     print(f"Testing data shape: X={X_test.shape}, y={y_test.shape}")
     
     # Run Clopper-Pearson
     clopper_pearson_eval(model, X_train, y_train, eps_tolerance=0.3, alpha=0.10, 
-                        output_file="output/10000_rows_trained_2layers_MAPE_model/training_pred_vs_true.csv", normalized_param_file="output/10000_rows_trained_2layers_model/normalization_params.npz")
+                        output_file="output/1000_rows_trained_2layers_L1_model/training_pred_vs_true.csv", normalized_param_file="normalization_params.npz")
     clopper_pearson_eval(model, X_test, y_test, eps_tolerance=0.3, alpha=0.10, 
-                        output_file="output/10000_rows_trained_2layers_MAPE_model/testing_pred_vs_true.csv", normalized_param_file="output/10000_rows_trained_2layers_model/normalization_params.npz")
+                        output_file="output/1000_rows_trained_2layers_L1_model/testing_pred_vs_true.csv", normalized_param_file="normalization_params.npz")
 
     # Feature ranges analysis
     # Get column names for better readability
