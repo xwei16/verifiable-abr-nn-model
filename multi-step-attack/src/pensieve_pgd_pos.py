@@ -1,4 +1,4 @@
-# python3 ../sabre/sabre_new.py -m ../sabre/traces/abr_test/pensieve_big.json -n ../sabre/traces/abr_test/network.json -a ../sabre/pensieve_pgd_pos.py -p starting_bitrate=3
+# python3 ../sabre/sabre_new.py -m ../sabre/traces/abr_test/pensieve_big.json -n ../sabre/traces/abr_test/network.json -a pensieve_pgd_pos.py -p starting_bitrate=3
 # generated output are in logs
 import os
 import csv
@@ -11,11 +11,13 @@ import tensorflow.compat.v1 as tf
 
 import sys
 import os
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 tf.disable_eager_execution()
 
-from pgd_in_sbare import PGD # PGD attack
-from sabre.sabre_new import Abr, AbrInput # Sabre classes
+from pgd_in_sabre import PGD # PGD attack
+from sabre_new import Abr, AbrInput # Sabre classes
 
 try:  # Attempt to import Sabre's get_buffer_level and manifest
     from sabre.sabre_new import get_buffer_level, manifest
@@ -165,7 +167,7 @@ class pensieve_pgd_pos(Abr):
 
         attacked_dt = attack.attack_download(state) * 10000.0
         attacked_thrpt = bytes_dl / 1000.0 / attacked_dt # throughput based on downloading time
-
+        print(f"Original DT: {delay_ms:.1f} ms, Attacked DT: {attacked_dt:.1f} ms")
         self._thrpt_hist[-1] = attacked_thrpt
         self._delay_hist[-1] = (attacked_dt / 10000.0)
 
