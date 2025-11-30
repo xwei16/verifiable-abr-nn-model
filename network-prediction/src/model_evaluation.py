@@ -30,12 +30,10 @@ Load normalization parameters from a file
 """
 def load_normalization_params(filepath='normalization_params.npz'):
     data = np.load(filepath)
-    X_mean = data['X_mean']
-    X_std = data['X_std']
-    y_mean = data['y_mean']
-    y_std = data['y_std']
+    X_max = data['X_max']
+    y_max = data['y_max']
     print(f"Normalization parameters loaded from {filepath}")
-    return X_mean, X_std, y_mean, y_std
+    return X_max, y_max
 
 
 '''
@@ -43,12 +41,12 @@ Clopper-Pearson evaluation
 '''
 def clopper_pearson_eval(model, X_test, y_test, eps_tolerance=0.01, alpha=0.05, output_file="output/pred_vs_true.csv", normalized_param_file="normalization_params.npz"):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    X_mean, X_std, y_mean, y_std = load_normalization_params(normalized_param_file)
+    X_max, y_max = load_normalization_params(normalized_param_file)
     print(f"=== BEFORE NORMALIZATION ===")
     print(f"X_test shape: {X_test.shape}")
     print(f"y_test shape: {y_test.shape}")
 
-    X_test = (X_test - X_mean) / X_std
+    X_test = X_test / X_max
     print(f"\n=== AFTER NORMALIZATION ===")
     print(f"X_test shape: {X_test.shape}")
 
@@ -74,26 +72,25 @@ def clopper_pearson_eval(model, X_test, y_test, eps_tolerance=0.01, alpha=0.05, 
         # print(f"y_pred_norm_flat shape: {y_pred_norm.shape}")
         # print(f"y_pred_norm_flat first 5: {y_pred_norm[:5]}")
         
-        y_pred = y_pred_norm * y_std + y_mean
 
         # print(f"\n=== FINAL DENORMALIZATION ===")
         # print(f"y_pred shape: {y_pred.shape}")
         # print(f"y_test shape: {y_test.shape}")
         # print(f"y_pred first 5: {y_pred[:5]}")
         # print(f"y_test first 5: {y_test[:5]}")
-
+    y_test = y_test / y_max
     # Put them into a DataFrame
     df = pd.DataFrame({
         "true_f(x)": y_test,
-        "predicted_f'(x)": y_pred,
-        "relative_error": np.abs(y_test - y_pred) / (y_test + 1e-8)
+        "predicted_f'(x)": y_pred_norm,
+        "relative_error": np.abs(y_test - y_pred_norm)
     })
 
     # Save to CSV file
     df.to_csv(output_file, index=False)
 
     # Success = relative error ≤ eps
-    successes = np.abs((y_pred - y_test) / (y_test + 1e-8)) <= eps_tolerance
+    successes = np.abs((y_pred_norm - y_test)) <= eps_tolerance
     
     k = np.sum(successes)
     n = len(y_test)
@@ -115,17 +112,17 @@ if __name__ == "__main__":
     model = torch.load("output-models/nn_network_model_10days_100_data.pt")
     #"output/10000_rows_trained_2layers_model/nn_network_model_10days_1000_data.pt"
     # Load data (same file or a new test set)
-    X_train, y_train = load_network_data("../../data/puffer/puffer_data_cleaned/training_data", nrows=100)
-    X_test, y_test = load_network_data("../../data/puffer/puffer_data_cleaned/testing_data") 
+    X_train, y_train = load_network_data("../../data/puffer/puffer_data_cleaned/training_data", nrows=1000)
+    X_test, y_test = load_network_data("../../data/puffer/puffer_data_cleaned/testing_data", nrows=1000) 
     
     print(f"Training data shape: X={X_train.shape}, y={y_train.shape}")
     print(f"Testing data shape: X={X_test.shape}, y={y_test.shape}")
     
     # Run Clopper-Pearson
-    clopper_pearson_eval(model, X_train, y_train, eps_tolerance=0.3, alpha=0.10, 
-                        output_file="output-models/1000_rows_trained_2layers_L1_model/training_pred_vs_true.csv", normalized_param_file="normalization_params.npz")
-    clopper_pearson_eval(model, X_test, y_test, eps_tolerance=0.3, alpha=0.10, 
-                        output_file="output-models/1000_rows_trained_2layers_L1_model/testing_pred_vs_true.csv", normalized_param_file="normalization_params.npz")
+    clopper_pearson_eval(model, X_train, y_train, eps_tolerance=0.1, alpha=0.10, 
+                        output_file="output-models/training_pred_vs_true.csv", normalized_param_file="output-models/normalization_params.npz")
+    clopper_pearson_eval(model, X_test, y_test, eps_tolerance=0.1, alpha=0.10, 
+                        output_file="output-models/testing_pred_vs_true.csv", normalized_param_file="output-models/normalization_params.npz")
 
     # Feature ranges analysis
     # Get column names for better readability

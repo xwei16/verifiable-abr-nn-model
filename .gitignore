@@ -1,1 +1,38 @@
+# Virtual environment
+venv/
+.venv/
+
+# Compiled Python files
+*.pyc
+__pycache__/
+
+# IDE-specific files
+.vscode/
+.idea/
+
+# Test-related files
+htmlcov/
+.coverage
+.pytest_cache/
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# Log files
+*.log
+
+# Temporary files
+*.tmp
+*.swp
+
+# Sensitive data (example)
+.env
+
+# Data
 data/
+network-prediction/src/experiments/
+network-prediction/src/output-models/
+network-prediction/output-models/
+multi-step-attack/logs/

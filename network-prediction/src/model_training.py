@@ -46,13 +46,13 @@ def train_model(X_train, y_train, epochs=200, batch_size=64, lr=1e-3):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Using device:", device)
 
-    # Normalize inputs
-    X_mean = X_train.mean(axis=0)
-    X_std = X_train.std(axis=0) + 1e-8
-    X_train = (X_train - X_mean) / X_std
-    y_mean = y_train.mean()
-    y_std = y_train.std()
-    y_train = (y_train - y_mean) / y_std
+    # Normalize inputs by max absolute value
+    X_max = np.max(np.abs(X_train), axis=0) + 1e-8
+    X_train = X_train / X_max
+
+    # Normalize labels by max absolute value
+    y_max = np.max(np.abs(y_train)) + 1e-8
+    y_train = y_train / y_max
 
     # Convert data to tensors
     X_train = torch.tensor(X_train, dtype=torch.float32)
@@ -89,28 +89,26 @@ def train_model(X_train, y_train, epochs=200, batch_size=64, lr=1e-3):
         scheduler.step(avg_loss)
         print(f"Epoch {epoch+1}/{epochs}, Loss: {avg_loss:.6f}")
 
-    return model, X_mean, X_std, y_mean, y_std
+    return model, X_max, y_max
 
 """
 Save normalization parameters to a file
 """
-def save_normalization_params(X_mean, X_std, y_mean, y_std, filepath='normalization_params.npz'):
+def save_normalization_params(X_max, y_max, filepath='normalization_params.npz'):
     
     np.savez(filepath, 
-             X_mean=X_mean, 
-             X_std=X_std, 
-             y_mean=y_mean, 
-             y_std=y_std)
+             X_max=X_max,
+             y_max=y_max)
     print(f"Normalization parameters saved to {filepath}")
     
 '''
 Example usage
 '''
 if __name__ == "__main__":
-    X_train, y_train = load_network_data("../../data/puffer/puffer_data_cleaned/training_data", 100)
+    X_train, y_train = load_network_data("../../data/puffer/puffer_data_cleaned/training_data", 1000)
     
     print(f"Training data shape: X={X_train.shape}, y={y_train.shape}")
 
-    model, X_mean, X_std, y_mean, y_std = train_model(X_train, y_train, epochs=500, batch_size=32, lr=1e-2)
+    model, X_max, y_max = train_model(X_train, y_train, epochs=500, batch_size=32, lr=1e-2)
     torch.save(model, "output-models/nn_network_model_10days_100_data.pt")
-    save_normalization_params(X_mean, X_std, y_mean, y_std, filepath='normalization_params.npz')
+    save_normalization_params(X_max, y_max, filepath='output-models/normalization_params.npz')
