@@ -26,7 +26,7 @@ This repository provides a comprehensive framework for developing, analyzing, an
 - **`abr-model/`**: Models for ABR algorithms.
   - `pensieve_bb_model/`: Pensieve BB model.
   - `pensieve_rl_model/`: Pensieve RL model.
-- **`network-prediction-model/`**: Models for predicting network behavior (currently under `network-prediction/output-models`)
+- **`network-prediction-model/`**: Models for predicting network behavior
 
 ### **Multi-Step Attack**
 - **`logs/`**: Logs from multi-step adversarial attacks.
