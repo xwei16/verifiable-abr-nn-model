@@ -36,3 +36,9 @@ network-prediction/src/experiments/
 network-prediction/src/output-models/
 network-prediction/output-models/
 multi-step-attack/logs/
+
+
+# abcrown
+verification/complete_verifier
+verification/spec
+verification/*.npz
