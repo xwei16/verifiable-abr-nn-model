@@ -36,7 +36,7 @@ def load_normalization_params(filepath):
 # =========================
 # Compute LiRPA Bounds
 # =========================
-def compute_dataset_lirpa_bound(model, X, X_max, y_max, method='backward'):
+def compute_dataset_lirpa_bound(f, model, X, X_max, y_max, method='backward'):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
     model.eval()
@@ -45,12 +45,23 @@ def compute_dataset_lirpa_bound(model, X, X_max, y_max, method='backward'):
     X_norm = X / X_max
     X_tensor = torch.tensor(X_norm, dtype=torch.float32).to(device)
 
-    # 🔥 Build global box from dataset
+    # Build global box from dataset
     lb = X_tensor.min(dim=0).values.unsqueeze(0)
     ub = X_tensor.max(dim=0).values.unsqueeze(0)
-
+    
     print(lb, ub)
 
+    f.write(
+        f"input bounds:\n"
+        f"lower: {lb.cpu().numpy() * X_max}\n"
+        f"upper: {ub.cpu().numpy()  * X_max}\n"
+    )
+
+    f.write(
+        f"input bounds (norm):\n"
+        f"lower: {lb}\n"
+        f"upper: {ub}\n"
+    )
     # Wrap model
     dummy = torch.zeros(1, X_tensor.shape[1]).to(device)
     lirpa_model = BoundedModule(model, dummy, device=device)
@@ -60,9 +71,18 @@ def compute_dataset_lirpa_bound(model, X, X_max, y_max, method='backward'):
     x = BoundedTensor(center, ptb)
 
     lb_out, ub_out = lirpa_model.compute_bounds(x=(x,), method=method)
-
-    lb_out = lb_out.item() * y_max
+    f.write(
+        f"dt(norm) bounds:\n"
+        f"lower: {lb_out}\n"
+        f"upper: {ub_out}\n"
+    )
+    lb_out = max(0, lb_out.item() * y_max)
     ub_out = ub_out.item() * y_max
+    f.write(
+        f"dt bounds:\n"
+        f"lower: {lb_out}\n"
+        f"upper: {ub_out}\n"
+    )
 
     return lb_out, ub_out
 
@@ -86,18 +106,31 @@ if __name__ == "__main__":
     # Load test data
     X_test, y_test = load_network_data(
         "../data/puffer/puffer_data_cleaned/testing_data",
-        nrows=100
+        nrows=50
     )
+    print(X_test)
 
     print("Computing certified bounds...")
-
+    
+    f = open("logs/env_bounds.log", "w")
+    f.write(f"{X_max}")
+    f.write(f"{y_max}")
     # Compute bounds
-    lb_out, ub_out = compute_dataset_lirpa_bound(
-        model,
-        X_test,
-        X_max,
-        y_max,
-        method='backward'   # options: 'IBP', 'forward', 'backward', 'CROWN-IBP'
-    )
+    for idx, X in enumerate(X_test):
+        f.write(f"--- Dataset {idx} ---\n")
+        methods = ["IBP", "CROWN", "CROWN-Optimized"]
+        for method in methods:
+            f.write(f"--- {method} ---\n")
+            lb_out, ub_out = compute_dataset_lirpa_bound(
+                f,
+                model,
+                X,
+                X_max,
+                y_max,
+                method=method,   # options: 'IBP', 'forward', 'backward', 'CROWN-IBP'
+                
+            )
+            print(f"{lb_out:12.6f} | {ub_out:12.6f}")
+    f.close()
 
-    print(f"{lb_out:12.6f} | {ub_out:12.6f}")
+        

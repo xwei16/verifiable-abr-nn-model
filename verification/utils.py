@@ -19,7 +19,7 @@ def load_network_data(dir_path, nrows=None):
     # Get all CSV files in the directory
     dir_path = Path(dir_path)
     csv_files = sorted(dir_path.glob('*.csv'))
-    
+
     if not csv_files:
         raise ValueError(f"No CSV files found in directory: {dir_path}")
     
@@ -27,17 +27,22 @@ def load_network_data(dir_path, nrows=None):
     
     # Load and combine all files
     dfs = []
+    y = []
     for csv_file in csv_files:
         print(f"Loading: {csv_file.name} with {nrows} rows")
         df = pd.read_csv(csv_file, nrows=nrows)
+        y_df = df['downloading_time_9'].values
+        y.append(y_df)
+        df = df.drop(columns=['downloading_time_9']).values
         dfs.append(df)
+        
     
     # Concatenate all dataframes
-    df = pd.concat(dfs, ignore_index=True)
-    print(f"Total rows loaded: {len(df)}")
+    # df = pd.concat(dfs, ignore_index=True)
+    # print(f"Total rows loaded: {len(df)}")
     
     # Extract features and target
-    X = df.drop(columns=['downloading_time_9']).values
-    y = df['downloading_time_9'].values
+    # X = df.drop(columns=['downloading_time_9']).values
     
-    return X, y
+    
+    return dfs, y
