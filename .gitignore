@@ -40,5 +40,10 @@ multi-step-attack/logs/
 
 # abcrown
 verification/complete_verifier
-verification/spec
 verification/*.npz
+verification/abcrown_scripts/spec
+verification/abcrown_scripts/results
+verification/abcrown_scripts/yaml
+verification/abcrown_scripts/*.txt
+verification/abcrown_scripts/*.pkl
+verification/abcrown_scripts/onnx_models
