@@ -4,7 +4,7 @@ import torch.nn as nn
 import argparse
 import subprocess
 import torch.nn.functional as F
-# python abcrown_pensieve_qoe.py   --model-path ../model/abr-model/pensieve_rl_model/nn_model_ep_155400.pth   --vnnlib-dir spec/  --abcrown complete_verifier/abcrown.py
+# python abcrown_pensieve_qoe.py   --model-path ../../model/abr-model/pensieve_rl_model/nn_model_ep_155400.pth   --vnnlib-dir spec/  --abcrown ../complete_verifier/abcrown.py
 
 # -----------------------------
 # Pensieve Actor Network
@@ -199,7 +199,7 @@ if __name__ == "__main__":
     parser.add_argument("--onnx-dir", default="onnx_models")
     parser.add_argument("--yaml-dir", default="yaml")
     parser.add_argument("--result-dir", default="results")
-    parser.add_argument("--abcrown", default="complete_verifier/abcrown.py")
+    parser.add_argument("--abcrown", default="../complete_verifier/abcrown.py")
     args = parser.parse_args()
 
     main(args)
