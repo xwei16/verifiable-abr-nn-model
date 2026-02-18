@@ -16,7 +16,7 @@ Pensieve input tensor layout:  s = np.zeros((6, 8), dtype=np.float32)
 Indexing convention for throughput / downloadtime history:
   LastN  →  slot (8 - N),  i.e. Last8 (oldest) → index 0, Last1 (newest) → index 7
 """
-# python3 lirpa_pensieve.py --pensieve-model-path \
+# python3 verification_loop.py --pensieve-model-path \
 # ../model/abr-model/pensieve_rl_model/nn_model_ep_155400.pth \
 # --env-model-dir ../model/network-prediction-model/
 import argparse
@@ -106,7 +106,7 @@ def load_pensieve_actor(model_path: str, device: torch.device) -> PensieveActor:
 # ---------------------------------------------------------------------------
 # JSON spec → (lb, ub) tensors of shape (1, 6, 8)
 # ---------------------------------------------------------------------------
-def load_bounds_from_spec(spec: dict, device: torch.device):
+def load_initial_state(device: torch.device):
     """
     Convert one entry from the ABR JSON spec into lower/upper bound tensors
     shaped (1, 6, 8) matching Pensieve's input layout.
@@ -130,51 +130,63 @@ def load_bounds_from_spec(spec: dict, device: torch.device):
     -------
     lb : torch.Tensor  shape (1, 6, 8)
     ub : torch.Tensor  shape (1, 6, 8)
+
+    * BR range: [300,750,1200,1850,2850,4300]
     """
+
     lb = np.zeros((6, 8), dtype=np.float32)
     ub = np.zeros((6, 8), dtype=np.float32)
 
     # ------------------------------------------------------------------
-    # Row 2: throughput history — Last8 (oldest) → col 0, Last1 → col 7
+    # Row 0: last chunk bitrate (col 7)
     # ------------------------------------------------------------------
-    for n in range(1, 9):          # n = 1 .. 8
-        col = 8 - n                # Last1 → col 7, Last8 → col 0
-        lb[2, col] = spec[f"Last{n}_throughput_l"]
-        ub[2, col] = spec[f"Last{n}_throughput_u"]
+    lb[0, 7] = 0.66279
+    ub[0, 7] = 0.66279
 
     # ------------------------------------------------------------------
-    # Row 3: download time history — same convention
+    # Row 1: buffer size (col 7)
     # ------------------------------------------------------------------
-    for n in range(1, 9):
-        col = 8 - n
-        lb[3, col] = spec[f"Last{n}_downloadtime_l"]
-        ub[3, col] = spec[f"Last{n}_downloadtime_u"]
+    lb[1, 7] = 0.4
+    ub[1, 7] = 0.5
+
 
     # ------------------------------------------------------------------
-    # Row 4: next chunk sizes for 6 quality levels — cols 0..5
+    # Row 2: throughput history — Last8 (col 0) → Last1 (col 7)
     # ------------------------------------------------------------------
-    for i in range(1, 7):         # chunksize1 .. chunksize6
-        lb[4, i - 1] = spec[f"chunksize{i}_l"]
-        ub[4, i - 1] = spec[f"chunksize{i}_u"]
-    # cols 6 and 7 of row 4 remain 0 (Pensieve never writes them)
+    # for n in range(1, 9):
+    #     col = 8 - n
+    #     lb[2, col] = spec[f"Last{n}_throughput_l"]
+    #     ub[2, col] = spec[f"Last{n}_throughput_u"]
+    
+    lb[2, 7] = 0.07
+    ub[2, 7] = 0.78
+    
 
     # ------------------------------------------------------------------
-    # Row 0: last chunk bitrate — only col 7 (s[0, -1])
+    # Row 3: download time history
     # ------------------------------------------------------------------
-    lb[0, 7] = spec["Last1_chunk_bitrate_l"]
-    ub[0, 7] = spec["Last1_chunk_bitrate_u"]
+    # for n in range(1, 9):
+    #     col = 8 - n
+    #     lb[3, col] = spec[f"Last{n}_downloadtime_l"]
+    #     ub[3, col] = spec[f"Last{n}_downloadtime_u"]
+    
+    lb[3, 7] = 0.15
+    ub[3, 7] = 0.66
 
     # ------------------------------------------------------------------
-    # Row 1: buffer size — only col 7 (s[1, -1])
+    # Row 4: chunk sizes (cols 0..5)
     # ------------------------------------------------------------------
-    lb[1, 7] = spec["Last1_buffer_size_l"]
-    ub[1, 7] = spec["Last1_buffer_size_u"]
-
+    chunk_size_lb = [0.11, 0.26, 0.39, 0.60, 0.89, 1.43]
+    chunk_size_ub = [0.18, 0.45, 0.71, 1.08, 1.73, 2.40]
+    for i in range(6):
+        lb[4, i] = chunk_size_lb[i]
+        ub[4, i] = chunk_size_ub[i]
+    
     # ------------------------------------------------------------------
-    # Row 5: chunks left — only col 7 (s[5, -1])
+    # Row 5: chunks left (col 7)
     # ------------------------------------------------------------------
-    lb[5, 7] = spec["Chunks_left_l"]
-    ub[5, 7] = spec["Chunks_left_u"]
+    lb[5, 7] = 0
+    ub[5, 7] = 0.96
 
     # Sanity check
     if np.any(lb > ub):
@@ -185,10 +197,7 @@ def load_bounds_from_spec(spec: dict, device: torch.device):
     return lb_t, ub_t
 
 
-# ---------------------------------------------------------------------------
-# auto-LiRPA bound computation
-# ---------------------------------------------------------------------------
-def compute_output_bounds(
+def pensieve_output_bounds(
     model: nn.Module,
     lb: torch.Tensor,
     ub: torch.Tensor,
@@ -207,94 +216,99 @@ def compute_output_bounds(
     return lb_out, ub_out
 
 
-# ---------------------------------------------------------------------------
-# Pretty-print helper
-# ---------------------------------------------------------------------------
 def _fmt(arr: np.ndarray) -> str:
     return "[" + ", ".join(f"{v:+.4f}" for v in arr.flatten()) + "]"
 
 
-def network_prediction_bound(lb_np, ub_np):
+def network_prediction_bound(lb_np, ub_np, current_br_idx, device="cpu"):
     """
     lb_np, ub_np shape: (6, 8)
-    Pensieve layout:
-        s[0] = last bitrate (_ / 4300)
-        s[1] = buffer (sec / 10)
-        s[2] = throughput (MB/s)
-        s[3] = download time (sec / 10)
-        s[4] = chunk sizes (MB) - next chunk only
-        s[5] = chunks left (_ / 48)
+
+    Returns:
+        lb_tensor, ub_tensor of shape (1, 19)
     """
 
-    env_input = {}
+    lb_list = [0] * 19
+    ub_list = [0] * 19
 
-    # Chunk sizes (MB)
-    chunk_bounds = []
+    # 1) Past Chunk sizes (assume past_chunk_size_lb is list of 8 tuples)
+    for i, (l, u) in enumerate(past_chunk_size_lb):
+        lb_list[i * 2] = l
+        ub_list[i * 2] = u
+
+    # 2) Past Download time (8 values)
     for i in range(8):
-        chunk_bounds.append((
-            lb_np[4, i],
-            ub_np[4, i]
-        ))
-    env_input["chunk_size_MB"] = chunk_bounds
+        lb_list[i * 2 + 1] = lb_np[3, i] * 10.0
+        ub_list[i * 2 + 1] = ub_np[3, i] * 10.0
 
-    # Download time (seconds)
-    dt_bounds = []
-    for i in range(8):
-        dt_bounds.append((
-            lb_np[3, i] * 10.0,
-            ub_np[3, i] * 10.0
-        ))
-    env_input["download_time_sec"] = dt_bounds
-
-    # Bandwidth (MBps)
-    bw_l_all = []
-    bw_u_all = []
-
-    for i in range(8):
-        bw_l_all.append(lb_np[2, i])
-        bw_u_all.append(ub_np[2, i])
+    # 3) Aggregate bandwidth
+    bw_l_all = [lb_np[2, i] for i in range(8)]
+    bw_u_all = [ub_np[2, i] for i in range(8)]
 
     B_min = min(bw_l_all)
     B_max = max(bw_u_all)
 
-    env_input["next_bandwidth_MBps"] = (B_min, B_max)
+    lb_list[16] = B_min
+    ub_list[16] = B_max
 
-    # Next network delay (propagation-only approx)
-    # delay ≈ download_time - (chunk_size / bandwidth)
-    network_delay_intervals = []
-    bw_bounds = []
-    for i in range(8):
-        bw_bounds.append((
-            lb_np[2, i],
-            ub_np[2, i]
-        ))
+    # 4) Network delay bounds: 0.01 - 0.15 (clustered from Puffer)
+    lb_list[17] = 0.01
+    ub_list[17] = 0.15
 
-    for i in range(8):
+    # 5) Current chunk size
+    lb_list[18] = lb_np[4, current_br_idx]
+    ub_list[18] = ub_np[4, current_br_idx]
 
-        size_l, size_u = chunk_bounds[i]
-        dt_l, dt_u = dt_bounds[i]
-        bw_l_MBps, bw_u_MBps = bw_bounds[i]
+    return np.array(lb_list), np.array(ub_list)
 
-        if bw_l_MBps <= 1e-9:
-            continue
 
-        tx_min = size_l / bw_u_MBps
-        tx_max = size_u / bw_l_MBps
+def net_output_bounds(
+    model: nn.Module,
+    lb,   # shape: (1, 19)
+    ub,   # shape: (1, 19)
+    X_max, 
+    y_max,
+    method: str = "IBP",
+):
+    """
+    Compute output bounds for Net (19 → 128 → 64 → 1)
+    using auto_LiRPA.
 
-        nd_l = max(0.0, dt_l - tx_max)
-        nd_u = max(0.0, dt_u - tx_min)
+    lb, ub must have shape (1, 19)
+    """
 
-        network_delay_intervals.append((nd_l, nd_u))
+    device = lb.device
+    model = model.to(device)
+    model.eval()  # IMPORTANT for BatchNorm
 
-    if network_delay_intervals:
-        env_input["next_network_delay_sec"] = (
-            min(v[0] for v in network_delay_intervals),
-            max(v[1] for v in network_delay_intervals),
-        )
-    else:
-        env_input["next_network_delay_sec"] = (0.0, 0.0)
+    # Dummy input must match input dimension (19)
+    dummy = torch.zeros(1, 19, device=device)
+    
+    lb = lb / X_max
+    ub = ub / X_max
+    lb = torch.tensor(lb, dtype=torch.float32, device=device).unsqueeze(0)
+    ub = torch.tensor(ub, dtype=torch.float32, device=device).unsqueeze(0)
+    # Wrap model
+    lirpa_model = BoundedModule(model, dummy, device=device)
 
-    return env_input
+    # Define L∞ perturbation
+    ptb = PerturbationLpNorm(
+        norm=float("inf"),
+        x_L=lb,
+        x_U=ub
+    )
+
+    center = (lb + ub) / 2.0
+    x = BoundedTensor(center, ptb)
+
+    # Compute bounds
+    lb_out, ub_out = lirpa_model.compute_bounds(
+        x=(x,),
+        method=method
+    )
+
+    return lb_out, ub_out
+
 
 # ---------------------------------------------------------------------------
 # Main
@@ -311,101 +325,62 @@ def main(args):
     env_norm_param_file = args.env_model_dir + "normalization_params.npz"
     print(f"[✓] ENV Model loaded from {args.env_model_dir}")
 
-    # Load spec file — run every entry - start state (S0)
-    with open(args.spec_path) as f:
-        all_specs = json.load(f)
-
     # open log file
     with open("logs/lirpa.log", "w") as f:
-        specs_to_run = list(enumerate(all_specs))
-
-        print(f"[✓] Spec file loaded: {len(all_specs)} entries, running all")
 
         methods = ["IBP", "CROWN", "CROWN-Optimized"]
 
-        for spec_idx, spec in specs_to_run:
-            f.write(f"{'='*70}")
-            f.write(f"Spec [{spec_idx}]")
-            f.write(f"{'='*70}\n")
+        input_lb, input_ub = load_initial_state(device)
 
-            lb, ub = load_bounds_from_spec(spec, device)
+        f.write(
+            f"input bounds:\n"
+            f"lower: {input_lb.squeeze(0).cpu().numpy()}\n"
+            f"upper: {input_ub.squeeze(0).cpu().numpy()}\n"
+        )
 
-            # Summarise the non-trivial input bounds
-            lb_np = lb.squeeze(0).cpu().numpy()   # (6, 8)
-            ub_np = ub.squeeze(0).cpu().numpy()
+        for method in methods:
 
-            f.write(
-                f"input bounds:\n"
-                f"lower: {lb_np}\n"
-                f"upper: {ub_np}\n"
-            )
+            f.write(f"--- {method} ---\n")
+            for _ in range(MAX_ROUND):
+                # pensieve logit bound 
+                logit_lb, logit_ub = pensieve_output_bounds(pensieve_actor, input_lb, input_ub, method)
+                # lb_arr = logit_lb.detach().cpu().numpy()
+                # ub_arr = logit_ub.detach().cpu().numpy()
+                # print(f"  lb: {_fmt(lb_arr)}")
+                # print(f"  ub: {_fmt(ub_arr)}")
+                f.write(
+                    f"logit bounds:\n"
+                    f"lower: {logit_lb.detach().cpu().numpy()}\n"
+                    f"upper: {logit_ub.detach().cpu().numpy()}\n"
+                )
 
-            # print(f"  Bitrate (s[0,7]):       [{lb_np[0,7]:.5f}, {ub_np[0,7]:.5f}]")
-            # print(f"  Buffer  (s[1,7]):       [{lb_np[1,7]:.5f}, {ub_np[1,7]:.5f}]")
-            # print(f"  Throughput (s[2,0:8]):  lb={lb_np[2]}")
-            # print(f"                          ub={ub_np[2]}")
-            # print(f"  DL time  (s[3,0:8]):    lb={lb_np[3]}")
-            # print(f"                          ub={ub_np[3]}")
-            # print(f"  Chunk sz (s[4,0:6]):    lb={lb_np[4,:6]}")
-            # print(f"                          ub={ub_np[4,:6]}")
-            # print(f"  Chunks left (s[5,7]):   [{lb_np[5,7]:.5f}, {ub_np[5,7]:.5f}]")
+                # ENV bound
+                
+                env_lb, env_ub = network_prediction_bound(input_lb.squeeze(0).cpu().numpy(), input_ub.squeeze(0).cpu().numpy(), 2, device=device)
+                net_output_bounds(env_model)
 
-            for method in methods:
-
-                f.write(f"--- {method} ---\n")
-                for _ in range(MAX_ROUND):
-                    # pensieve logit bound 
-                    lb_out, ub_out = compute_output_bounds(pensieve_actor, lb, ub, method)
-                    lb_arr = lb_out.detach().cpu().numpy()
-                    ub_arr = ub_out.detach().cpu().numpy()
-                    print(f"  lb: {_fmt(lb_arr)}")
-                    print(f"  ub: {_fmt(ub_arr)}")
-                    f.write(
-                        f"logit bounds:\n"
-                        f"lower: {lb_arr}\n"
-                        f"upper: {ub_arr}\n"
-                    )
-
-                    # ENV bound
-                    # env_inputs = network_prediction_bound(lb_np, ub_np) # TODO
-
-                    # print("  Bandwidth (Mbps):")
-                    # for i, (l, u) in enumerate(env_inputs["bandwidth_Mbps"], 1):
-                    #     print(f"    t-{i}: [{l:.3f}, {u:.3f}]")
-
-                    # print("\n  Download Time (sec):")
-                    # for i, (l, u) in enumerate(env_inputs["download_time_sec"], 1):
-                    #     print(f"    t-{i}: [{l:.3f}, {u:.3f}]")
-
-                    # print("\n  Chunk Size (MB):")
-                    # for i, (l, u) in enumerate(env_inputs["chunk_size_MB"], 1):
-                    #     print(f"    t-{i}: [{l:.3f}, {u:.3f}]")
-
-                    # nb_l, nb_u = env_inputs["next_bandwidth_Mbps"]
-                    # print(f"\n  Next Bandwidth Envelope (Mbps): [{nb_l:.3f}, {nb_u:.3f}]")
-
-                    # nd_l, nd_u = env_inputs["next_network_delay_sec"]
-                    # print(f"  Next Network Delay Approx (sec): [{nd_l:.3f}, {nd_u:.3f}]")
+                # update_history
+                past_chunk_size_lb.pop(0)
 
 
-            # TODO: compute delta QoE bound
+        # TODO: compute delta QoE bound
 
-            # Save per-spec results
-            # out_path = f"{args.output_prefix}_spec{spec_idx:04d}.npz"
-            # save_dict = {
-            #     "spec_index":  spec_idx,
-            #     "lb_input":    lb_np,
-            #     "ub_input":    ub_np,
-            # }
-            # for method, res in results.items():
-            #     key = method.replace("-", "_")
-            #     save_dict[f"{key}_lower"] = res["lower"]
-            #     save_dict[f"{key}_upper"] = res["upper"]
+        # Save per-spec results
+        # out_path = f"{args.output_prefix}_spec{spec_idx:04d}.npz"
+        # save_dict = {
+        #     "spec_index":  spec_idx,
+        #     "lb_input":    lb_np,
+        #     "ub_input":    ub_np,
+        # }
+        # for method, res in results.items():
+        #     key = method.replace("-", "_")
+        #     save_dict[f"{key}_lower"] = res["lower"]
+        #     save_dict[f"{key}_upper"] = res["upper"]
 
-            # np.savez(out_path, **save_dict)
-            # print(f"\n  [✓] Saved → {out_path}")
+        # np.savez(out_path, **save_dict)
+        # print(f"\n  [✓] Saved → {out_path}")
 
-            
+        
 
 # ---------------------------------------------------------------------------
 # CLI
@@ -424,11 +399,11 @@ if __name__ == "__main__":
         required=True,
         help="Path to the directory of the ENV checkpoint",
     )
-    parser.add_argument(
-        "--spec-path",
-        default="../data/abr-specifications/full_spec_no_300.json",
-        help="Path to the ABR JSON spec file",
-    )
+    # parser.add_argument(
+    #     "--spec-path",
+    #     default="../data/abr-specifications/full_spec_no_300.json",
+    #     help="Path to the ABR JSON spec file",
+    # )
     parser.add_argument(
         "--output-prefix",
         default="pensieve_bounds",
