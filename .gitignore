@@ -21,7 +21,7 @@ build/
 *.egg-info/
 
 # Log files
-*.log
+# *.log
 
 # Temporary files
 *.tmp
@@ -47,3 +47,4 @@ verification/abcrown_scripts/yaml
 verification/abcrown_scripts/*.txt
 verification/abcrown_scripts/*.pkl
 verification/abcrown_scripts/onnx_models
+verification/logs
