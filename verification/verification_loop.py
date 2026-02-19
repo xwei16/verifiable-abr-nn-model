@@ -31,7 +31,7 @@ from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import PerturbationLpNorm
 
 
-MAX_ROUND = 1
+MAX_ROUND = 2
 BRS = [300,750,1200,1850,2850,4300]
 
 # def color(text, c):
@@ -147,7 +147,7 @@ def load_initial_state(device: torch.device):
 
     # Row 1: buffer size (col 7)
     lb[1, 7] = 0.4
-    ub[1, 7] = 0.5
+    ub[1, 7] = 0.5 
 
     # Row 2: throughput history — Last8 (col 0) → Last1 (col 7)
     # for n in range(1, 9):
@@ -387,6 +387,38 @@ def get_delta_qoe(br_idx, last_br_idx):
     delta_qoe = cur_q - abs(cur_q - last_q)
     return round(delta_qoe, 5)
 
+
+# ---------------------------------------------------------------------------
+# Update Pensieve Input Bounds
+# ---------------------------------------------------------------------------
+def update_input_bound(input_lb, input_ub, new_br_idx, new_dt_lb, new_dt_ub, device):
+
+    # Row 0: last chunk bitrate (col 7)
+    input_lb[0, 7] = BRS[new_br_idx] / BRS[-1]
+    input_ub[0, 7] = BRS[new_br_idx] / BRS[-1]
+
+    # Row 2: throughput history — Last8 (col 0) → Last1 (col 7)
+    input_lb[2] = np.roll(input_lb[2], -1)
+    input_ub[2] = np.roll(input_ub[2], -1)
+    input_lb[2, -1] = input_lb[4, new_br_idx] / new_dt_ub
+    input_ub[2, -1] = 1.5 # input_ub[4, new_br_idx] / new_dt_lb
+    
+
+    # Row 3: download time history
+    input_lb[3] = np.roll(input_lb[3], -1)
+    input_ub[3] = np.roll(input_ub[3], -1)
+    input_lb[3, 7] = new_dt_lb
+    input_ub[3, 7] = new_dt_ub
+    
+    # Sanity check
+    if np.any(input_lb > input_ub):
+        raise ValueError("Spec contains lb > ub for at least one input dimension.")
+
+    lb_t = torch.tensor(input_lb, dtype=torch.float32, device=device).unsqueeze(0)  # (1,6,8)
+    ub_t = torch.tensor(input_ub, dtype=torch.float32, device=device).unsqueeze(0)
+    return lb_t, ub_t
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -487,9 +519,12 @@ def main(args):
                 f"\tpast_download_time_ub: {past_download_time_ub}\n"
             )
 
-            # TODO: compute delta QoE bound
+            # compute delta QoE bound
             delta_qoe = get_delta_qoe(br_idx, last_br_idx)
             f.write(f"Delta QoE: {delta_qoe}\n")
+
+            # load next input bound
+            input_lb, input_ub = update_input_bound(input_lb_np, input_ub_np, br_idx, dt_lb, dt_ub, device)
 
 
 # ---------------------------------------------------------------------------
