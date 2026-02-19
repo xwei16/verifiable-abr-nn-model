@@ -29,10 +29,6 @@ import torch.nn.functional as F
 from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import PerturbationLpNorm
 
-past_chunk_size_lb = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-past_chunk_size_ub = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-past_download_time_lb = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-past_download_time_ub = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
 MAX_ROUND = 1
 
@@ -220,7 +216,15 @@ def _fmt(arr: np.ndarray) -> str:
     return "[" + ", ".join(f"{v:+.4f}" for v in arr.flatten()) + "]"
 
 
-def network_prediction_bound(lb_np, ub_np, current_br_idx, device="cpu"):
+def network_prediction_bound(
+    lb_np,
+    ub_np,
+    current_br_idx,
+    past_chunk_size_lb,
+    past_chunk_size_ub,
+    past_download_time_lb,
+    past_download_time_ub,
+):
     """
     lb_np, ub_np shape: (6, 8)
 
@@ -232,7 +236,7 @@ def network_prediction_bound(lb_np, ub_np, current_br_idx, device="cpu"):
     ub_list = [0] * 19
 
     # 1) Past Chunk sizes (assume past_chunk_size_lb is list of 8 tuples)
-    for i, (l, u) in enumerate(past_chunk_size_lb):
+    for i, (l, u) in enumerate(zip(past_chunk_size_lb, past_chunk_size_ub)):
         lb_list[i * 2] = l
         ub_list[i * 2] = u
 
@@ -259,10 +263,15 @@ def network_prediction_bound(lb_np, ub_np, current_br_idx, device="cpu"):
     lb_list[18] = lb_np[4, current_br_idx]
     ub_list[18] = ub_np[4, current_br_idx]
 
-    return np.array(lb_list), np.array(ub_list)
+    return np.array(lb_list, dtype=np.float32), np.array(ub_list, dtype=np.float32)
 
+
+def load_normalization_params(filepath):
+    data = np.load(filepath)
+    return data['X_max'], data['y_max']
 
 def net_output_bounds(
+    f,
     model: nn.Module,
     lb,   # shape: (1, 19)
     ub,   # shape: (1, 19)
@@ -270,41 +279,57 @@ def net_output_bounds(
     y_max,
     method: str = "IBP",
 ):
-    """
-    Compute output bounds for Net (19 → 128 → 64 → 1)
-    using auto_LiRPA.
-
-    lb, ub must have shape (1, 19)
-    """
-
-    device = lb.device
-    model = model.to(device)
-    model.eval()  # IMPORTANT for BatchNorm
-
-    # Dummy input must match input dimension (19)
-    dummy = torch.zeros(1, 19, device=device)
     
-    lb = lb / X_max
-    ub = ub / X_max
-    lb = torch.tensor(lb, dtype=torch.float32, device=device).unsqueeze(0)
-    ub = torch.tensor(ub, dtype=torch.float32, device=device).unsqueeze(0)
-    # Wrap model
-    lirpa_model = BoundedModule(model, dummy, device=device)
+    # X_max type: <class 'numpy.ndarray'>
+    # y_max type: <class 'numpy.ndarray'>
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = model.to(device)
+    model.eval()
 
-    # Define L∞ perturbation
-    ptb = PerturbationLpNorm(
-        norm=float("inf"),
-        x_L=lb,
-        x_U=ub
+    # Normalize
+    X_max = X_max.astype(np.float32)
+    y_max = np.float32(y_max)
+
+    lb = lb.astype(np.float32) / X_max
+    ub = ub.astype(np.float32) / X_max
+
+    f.write(
+        f"input bounds:\n"
+        f"lower: {lb}\n"
+        f"upper: {ub}\n"
+    )
+    lb = torch.tensor(lb, dtype=torch.float32).unsqueeze(0).to(device)
+    ub = torch.tensor(ub, dtype=torch.float32).unsqueeze(0).to(device)
+    
+    print(lb, ub)
+    f.write(
+        f"input bounds (norm):\n"
+        f"lower: {lb}\n"
+        f"upper: {ub}\n"
     )
 
+    # Wrap model
+    print(lb.shape)
+    dummy = torch.zeros(1, lb.shape[1]).to(device)
+    lirpa_model = BoundedModule(model, dummy, device=device)
+
+    ptb = PerturbationLpNorm(norm=float("inf"), x_L=lb, x_U=ub)
     center = (lb + ub) / 2.0
     x = BoundedTensor(center, ptb)
 
-    # Compute bounds
-    lb_out, ub_out = lirpa_model.compute_bounds(
-        x=(x,),
-        method=method
+    lb_out, ub_out = lirpa_model.compute_bounds(x=(x,), method=method)
+    f.write(
+        f"dt(norm) bounds:\n"
+        f"lower: {lb_out}\n"
+        f"upper: {ub_out}\n"
+    )
+    lb_out = np.float32(max(0.0, lb_out.item() * y_max))
+    ub_out = np.float32(ub_out.item() * y_max)
+    
+    f.write(
+        f"dt bounds:\n"
+        f"lower: {lb_out}\n"
+        f"upper: {ub_out}\n"
     )
 
     return lb_out, ub_out
@@ -322,11 +347,16 @@ def main(args):
     print(f"[✓] Pensieve Model loaded from {args.pensieve_model_path}")
 
     env_model = torch.load(args.env_model_dir + "network_pred.pt", weights_only=False)
-    env_norm_param_file = args.env_model_dir + "normalization_params.npz"
     print(f"[✓] ENV Model loaded from {args.env_model_dir}")
+
+    # Load normalization parameters
+    env_norm_param_file = args.env_model_dir + "normalization_params.npz"
+    X_max, y_max = load_normalization_params(env_norm_param_file)
+    
 
     # open log file
     with open("logs/lirpa.log", "w") as f:
+
 
         methods = ["IBP", "CROWN", "CROWN-Optimized"]
 
@@ -341,7 +371,15 @@ def main(args):
         for method in methods:
 
             f.write(f"--- {method} ---\n")
-            for _ in range(MAX_ROUND):
+
+            # initialize history
+            past_chunk_size_lb = np.zeros((8), dtype=np.float32)
+            past_chunk_size_ub = np.zeros((8), dtype=np.float32)
+            past_download_time_lb = np.zeros((8), dtype=np.float32)
+            past_download_time_ub = np.zeros((8), dtype=np.float32)
+
+            for i in range(MAX_ROUND):
+                f.write(f"--- Round {i} ---\n")
                 # pensieve logit bound 
                 logit_lb, logit_ub = pensieve_output_bounds(pensieve_actor, input_lb, input_ub, method)
                 # lb_arr = logit_lb.detach().cpu().numpy()
@@ -355,30 +393,38 @@ def main(args):
                 )
 
                 # ENV bound
-                
-                env_lb, env_ub = network_prediction_bound(input_lb.squeeze(0).cpu().numpy(), input_ub.squeeze(0).cpu().numpy(), 2, device=device)
-                net_output_bounds(env_model)
+                input_lb_np = input_lb.squeeze(0).cpu().numpy()
+                input_ub_np = input_ub.squeeze(0).cpu().numpy()
+
+                env_lb, env_ub = network_prediction_bound(
+                    input_lb_np,
+                    input_ub_np,
+                    2,
+                    past_chunk_size_lb,
+                    past_chunk_size_ub,
+                    past_download_time_lb,
+                    past_download_time_ub,
+                )
+                dt_lb, dt_ub = net_output_bounds(f, env_model, env_lb, env_ub, X_max, y_max, method)
 
                 # update_history
-                past_chunk_size_lb.pop(0)
+                past_chunk_size_lb = np.roll(past_chunk_size_lb, -1)
+                past_chunk_size_lb[-1] = np.float32(input_lb.squeeze(0).cpu().numpy()[4, 2])
+                past_chunk_size_ub = np.roll(past_chunk_size_ub, -1)
+                past_chunk_size_ub[-1] = np.float32(input_ub.squeeze(0).cpu().numpy()[4, 2])
+                past_download_time_lb = np.roll(past_download_time_lb, -1)
+                past_download_time_lb[-1] = np.float32(dt_lb)
+                past_download_time_ub = np.roll(past_download_time_ub, -1)
+                past_download_time_ub[-1] = np.float32(dt_ub)
 
-
+                f.write(
+                    "history update:\n"
+                    f"  past_chunk_size_lb: {past_chunk_size_lb}\n"
+                    f"  past_chunk_size_ub: {past_chunk_size_ub}\n"
+                    f"  past_download_time_lb: {past_download_time_lb}\n"
+                    f"  past_download_time_ub: {past_download_time_ub}\n"
+                )
         # TODO: compute delta QoE bound
-
-        # Save per-spec results
-        # out_path = f"{args.output_prefix}_spec{spec_idx:04d}.npz"
-        # save_dict = {
-        #     "spec_index":  spec_idx,
-        #     "lb_input":    lb_np,
-        #     "ub_input":    ub_np,
-        # }
-        # for method, res in results.items():
-        #     key = method.replace("-", "_")
-        #     save_dict[f"{key}_lower"] = res["lower"]
-        #     save_dict[f"{key}_upper"] = res["upper"]
-
-        # np.savez(out_path, **save_dict)
-        # print(f"\n  [✓] Saved → {out_path}")
 
         
 
