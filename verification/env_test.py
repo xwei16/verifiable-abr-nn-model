@@ -37,6 +37,9 @@ def load_normalization_params(filepath):
 # Compute LiRPA Bounds
 # =========================
 def compute_dataset_lirpa_bound(f, model, X, X_max, y_max, method='backward'):
+
+    # X_max type: <class 'numpy.ndarray'>
+    # y_max type: <class 'numpy.ndarray'>
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
     model.eval()
@@ -102,7 +105,7 @@ if __name__ == "__main__":
     X_max, y_max = load_normalization_params(
         "../model/network-prediction-model/normalization_params.npz"
     )
-
+    
     # Load test data
     X_test, y_test = load_network_data(
         "../data/puffer/puffer_data_cleaned/testing_data",
@@ -131,6 +134,7 @@ if __name__ == "__main__":
                 
             )
             print(f"{lb_out:12.6f} | {ub_out:12.6f}")
+
     f.close()
 
         
