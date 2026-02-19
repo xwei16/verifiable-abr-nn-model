@@ -18,6 +18,7 @@ Indexing convention for throughput / downloadtime history:
 """
 # python3 verification_loop.py --pensieve-model-path \
 # ../model/abr-model/pensieve_rl_model/nn_model_ep_155400.pth \
+# --last-br-idx 4 \
 # --env-model-dir ../model/network-prediction-model/
 import argparse
 import json
@@ -31,6 +32,13 @@ from auto_LiRPA.perturbations import PerturbationLpNorm
 
 
 MAX_ROUND = 1
+BRS = [300,750,1200,1850,2850,4300]
+
+# def color(text, c):
+#     return f"{c}{text}\033[0m"
+
+# GREEN = "\033[92m"
+# RED   = "\033[91m"
 
 # ---------------------------------------------------------------------------
 # ENV Network
@@ -133,22 +141,15 @@ def load_initial_state(device: torch.device):
     lb = np.zeros((6, 8), dtype=np.float32)
     ub = np.zeros((6, 8), dtype=np.float32)
 
-    # ------------------------------------------------------------------
     # Row 0: last chunk bitrate (col 7)
-    # ------------------------------------------------------------------
     lb[0, 7] = 0.66279
     ub[0, 7] = 0.66279
 
-    # ------------------------------------------------------------------
     # Row 1: buffer size (col 7)
-    # ------------------------------------------------------------------
     lb[1, 7] = 0.4
     ub[1, 7] = 0.5
 
-
-    # ------------------------------------------------------------------
     # Row 2: throughput history — Last8 (col 0) → Last1 (col 7)
-    # ------------------------------------------------------------------
     # for n in range(1, 9):
     #     col = 8 - n
     #     lb[2, col] = spec[f"Last{n}_throughput_l"]
@@ -158,9 +159,7 @@ def load_initial_state(device: torch.device):
     ub[2, 7] = 0.78
     
 
-    # ------------------------------------------------------------------
     # Row 3: download time history
-    # ------------------------------------------------------------------
     # for n in range(1, 9):
     #     col = 8 - n
     #     lb[3, col] = spec[f"Last{n}_downloadtime_l"]
@@ -169,18 +168,14 @@ def load_initial_state(device: torch.device):
     lb[3, 7] = 0.15
     ub[3, 7] = 0.66
 
-    # ------------------------------------------------------------------
     # Row 4: chunk sizes (cols 0..5)
-    # ------------------------------------------------------------------
     chunk_size_lb = [0.11, 0.26, 0.39, 0.60, 0.89, 1.43]
     chunk_size_ub = [0.18, 0.45, 0.71, 1.08, 1.73, 2.40]
     for i in range(6):
         lb[4, i] = chunk_size_lb[i]
         ub[4, i] = chunk_size_ub[i]
     
-    # ------------------------------------------------------------------
     # Row 5: chunks left (col 7)
-    # ------------------------------------------------------------------
     lb[5, 7] = 0
     ub[5, 7] = 0.96
 
@@ -193,6 +188,9 @@ def load_initial_state(device: torch.device):
     return lb_t, ub_t
 
 
+# ---------------------------------------------------------------------------
+# Pensieve Output Bound Generation
+# ---------------------------------------------------------------------------
 def pensieve_output_bounds(
     model: nn.Module,
     lb: torch.Tensor,
@@ -212,10 +210,49 @@ def pensieve_output_bounds(
     return lb_out, ub_out
 
 
+# ---------------------------------------------------------------------------
+# Helper formatting function
+# ---------------------------------------------------------------------------
 def _fmt(arr: np.ndarray) -> str:
     return "[" + ", ".join(f"{v:+.4f}" for v in arr.flatten()) + "]"
 
 
+# ---------------------------------------------------------------------------
+# Calculate next BR index based on the Pensieve Output Logit Bounds -- Supposed to be only one
+# ---------------------------------------------------------------------------
+def get_br_index(lb: np.ndarray, ub: np.ndarray) -> int:
+    lb = lb.flatten()
+    ub = ub.flatten()
+
+    if lb.shape != ub.shape:
+        raise ValueError("lb and ub must have the same shape")
+
+    lb_i = lb.astype(np.int64)
+    ub_i = ub.astype(np.int64)
+
+    n = lb_i.shape[0]
+
+    ub_others = np.tile(ub_i, (n, 1))
+
+    sentinel = np.iinfo(np.int64).min
+    np.fill_diagonal(ub_others, sentinel)
+
+    max_other_ub = ub_others.max(axis=1)
+
+    valid = lb_i >= max_other_ub
+
+    if not np.any(valid):
+        raise RuntimeError(
+            f"No dominant index found.\n"
+            f"Truncated lb = {lb_i}\n"
+            f"Truncated ub = {ub_i}"
+        )
+
+    return int(np.argmax(valid))
+
+# ---------------------------------------------------------------------------
+# ENV Model Input Bound Generation
+# ---------------------------------------------------------------------------
 def network_prediction_bound(
     lb_np,
     ub_np,
@@ -241,9 +278,9 @@ def network_prediction_bound(
         ub_list[i * 2] = u
 
     # 2) Past Download time (8 values)
-    for i in range(8):
-        lb_list[i * 2 + 1] = lb_np[3, i] * 10.0
-        ub_list[i * 2 + 1] = ub_np[3, i] * 10.0
+    for i, (l, u) in enumerate(zip(past_download_time_lb, past_download_time_ub)):
+        lb_list[i * 2 + 1] = l * 10
+        ub_list[i * 2 + 1] = u * 10
 
     # 3) Aggregate bandwidth
     bw_l_all = [lb_np[2, i] for i in range(8)]
@@ -270,6 +307,11 @@ def load_normalization_params(filepath):
     data = np.load(filepath)
     return data['X_max'], data['y_max']
 
+
+
+# ---------------------------------------------------------------------------
+# Compute ENV model output bound
+# ---------------------------------------------------------------------------
 def net_output_bounds(
     f,
     model: nn.Module,
@@ -290,22 +332,23 @@ def net_output_bounds(
     X_max = X_max.astype(np.float32)
     y_max = np.float32(y_max)
 
+    f.write(
+        f"input bounds (ENV input):\n"
+        f"\tlower: {lb}\n"
+        f"\tupper: {ub}\n"
+    )
+
     lb = lb.astype(np.float32) / X_max
     ub = ub.astype(np.float32) / X_max
 
-    f.write(
-        f"input bounds:\n"
-        f"lower: {lb}\n"
-        f"upper: {ub}\n"
-    )
     lb = torch.tensor(lb, dtype=torch.float32).unsqueeze(0).to(device)
     ub = torch.tensor(ub, dtype=torch.float32).unsqueeze(0).to(device)
     
     print(lb, ub)
     f.write(
-        f"input bounds (norm):\n"
-        f"lower: {lb}\n"
-        f"upper: {ub}\n"
+        f"input bounds (ENV input) -- norm:\n"
+        f"\tlower: {lb}\n"
+        f"\tupper: {ub}\n"
     )
 
     # Wrap model
@@ -319,21 +362,30 @@ def net_output_bounds(
 
     lb_out, ub_out = lirpa_model.compute_bounds(x=(x,), method=method)
     f.write(
-        f"dt(norm) bounds:\n"
-        f"lower: {lb_out}\n"
-        f"upper: {ub_out}\n"
+        f"dt bounds (ENV output) -- norm:\n"
+        f"\tlower: {lb_out}\n"
+        f"\tupper: {ub_out}\n"
     )
     lb_out = np.float32(max(0.0, lb_out.item() * y_max))
     ub_out = np.float32(ub_out.item() * y_max)
     
     f.write(
-        f"dt bounds:\n"
-        f"lower: {lb_out}\n"
-        f"upper: {ub_out}\n"
+        f"dt bounds (ENV output):\n"
+        f"\tlower: {lb_out}\n"
+        f"\tupper: {ub_out}\n"
     )
 
     return lb_out, ub_out
 
+
+# ---------------------------------------------------------------------------
+# Compute delta QOE
+# ---------------------------------------------------------------------------
+def get_delta_qoe(br_idx, last_br_idx):
+    last_q = np.log(BRS[last_br_idx] / BRS[0])
+    cur_q = np.log(BRS[br_idx] / BRS[0])
+    delta_qoe = cur_q - abs(cur_q - last_q)
+    return round(delta_qoe, 5)
 
 # ---------------------------------------------------------------------------
 # Main
@@ -353,80 +405,92 @@ def main(args):
     env_norm_param_file = args.env_model_dir + "normalization_params.npz"
     X_max, y_max = load_normalization_params(env_norm_param_file)
     
+    # get initial br index
+    last_br_idx = int(args.last_br_idx)
 
     # open log file
     with open("logs/lirpa.log", "w") as f:
 
 
-        methods = ["IBP", "CROWN", "CROWN-Optimized"]
+        # methods = ["IBP", "CROWN", "CROWN-Optimized"]
+        method = "CROWN-Optimized"
 
         input_lb, input_ub = load_initial_state(device)
 
-        f.write(
-            f"input bounds:\n"
-            f"lower: {input_lb.squeeze(0).cpu().numpy()}\n"
-            f"upper: {input_ub.squeeze(0).cpu().numpy()}\n"
-        )
+        # for method in methods:
 
-        for method in methods:
+        # f.write(f"--- {method} ---\n")
 
-            f.write(f"--- {method} ---\n")
+        # initialize history
+        past_chunk_size_lb = np.zeros((8), dtype=np.float32)
+        past_chunk_size_ub = np.zeros((8), dtype=np.float32)
+        past_download_time_lb = np.zeros((8), dtype=np.float32)
+        past_download_time_ub = np.zeros((8), dtype=np.float32)
 
-            # initialize history
-            past_chunk_size_lb = np.zeros((8), dtype=np.float32)
-            past_chunk_size_ub = np.zeros((8), dtype=np.float32)
-            past_download_time_lb = np.zeros((8), dtype=np.float32)
-            past_download_time_ub = np.zeros((8), dtype=np.float32)
+        for i in range(MAX_ROUND):
+            f.write(f"--- Round {i} ---\n")
 
-            for i in range(MAX_ROUND):
-                f.write(f"--- Round {i} ---\n")
-                # pensieve logit bound 
-                logit_lb, logit_ub = pensieve_output_bounds(pensieve_actor, input_lb, input_ub, method)
-                # lb_arr = logit_lb.detach().cpu().numpy()
-                # ub_arr = logit_ub.detach().cpu().numpy()
-                # print(f"  lb: {_fmt(lb_arr)}")
-                # print(f"  ub: {_fmt(ub_arr)}")
-                f.write(
-                    f"logit bounds:\n"
-                    f"lower: {logit_lb.detach().cpu().numpy()}\n"
-                    f"upper: {logit_ub.detach().cpu().numpy()}\n"
-                )
+            input_lb_np = input_lb.squeeze(0).cpu().numpy()
+            input_ub_np = input_ub.squeeze(0).cpu().numpy()
 
-                # ENV bound
-                input_lb_np = input_lb.squeeze(0).cpu().numpy()
-                input_ub_np = input_ub.squeeze(0).cpu().numpy()
+            f.write(
+                f"input bounds (pensieve input):\n"
+                f"\tlower: {input_lb_np}\n"
+                f"\tupper: {input_ub_np}\n"
+                f"\tinput br (last br) index: {last_br_idx}\n"
+            )
 
-                env_lb, env_ub = network_prediction_bound(
-                    input_lb_np,
-                    input_ub_np,
-                    2,
-                    past_chunk_size_lb,
-                    past_chunk_size_ub,
-                    past_download_time_lb,
-                    past_download_time_ub,
-                )
-                dt_lb, dt_ub = net_output_bounds(f, env_model, env_lb, env_ub, X_max, y_max, method)
+            # pensieve logit bound 
+            logit_lb, logit_ub = pensieve_output_bounds(pensieve_actor, input_lb, input_ub, method)
+            logit_lb_np = logit_lb.detach().cpu().numpy()
+            logit_ub_np = logit_ub.detach().cpu().numpy()
 
-                # update_history
-                past_chunk_size_lb = np.roll(past_chunk_size_lb, -1)
-                past_chunk_size_lb[-1] = np.float32(input_lb.squeeze(0).cpu().numpy()[4, 2])
-                past_chunk_size_ub = np.roll(past_chunk_size_ub, -1)
-                past_chunk_size_ub[-1] = np.float32(input_ub.squeeze(0).cpu().numpy()[4, 2])
-                past_download_time_lb = np.roll(past_download_time_lb, -1)
-                past_download_time_lb[-1] = np.float32(dt_lb)
-                past_download_time_ub = np.roll(past_download_time_ub, -1)
-                past_download_time_ub[-1] = np.float32(dt_ub)
+            f.write(
+                f"logit bounds (pensieve output):\n"
+                f"\tlower: {logit_lb_np}\n"
+                f"\tupper: {logit_ub_np}\n"
+            )
 
-                f.write(
-                    "history update:\n"
-                    f"  past_chunk_size_lb: {past_chunk_size_lb}\n"
-                    f"  past_chunk_size_ub: {past_chunk_size_ub}\n"
-                    f"  past_download_time_lb: {past_download_time_lb}\n"
-                    f"  past_download_time_ub: {past_download_time_ub}\n"
-                )
-        # TODO: compute delta QoE bound
+            # get next predicted br
+            br_idx = get_br_index(logit_lb_np, logit_ub_np)
+            if br_idx is None:
+                raise ValueError("br_idx is None")
+            f.write(f"\tpredicted br index: {br_idx}\n")
 
-        
+            # ENV bound
+            env_lb, env_ub = network_prediction_bound(
+                input_lb_np,
+                input_ub_np,
+                br_idx,
+                past_chunk_size_lb,
+                past_chunk_size_ub,
+                past_download_time_lb,
+                past_download_time_ub,
+            )
+            dt_lb, dt_ub = net_output_bounds(f, env_model, env_lb, env_ub, X_max, y_max, method)
+
+            # update_history
+            past_chunk_size_lb = np.roll(past_chunk_size_lb, -1)
+            past_chunk_size_lb[-1] = np.float32(input_lb_np[4, 2])
+            past_chunk_size_ub = np.roll(past_chunk_size_ub, -1)
+            past_chunk_size_ub[-1] = np.float32(input_ub_np[4, 2])
+            past_download_time_lb = np.roll(past_download_time_lb, -1)
+            past_download_time_lb[-1] = np.float32(dt_lb)
+            past_download_time_ub = np.roll(past_download_time_ub, -1)
+            past_download_time_ub[-1] = np.float32(dt_ub)
+
+            f.write(
+                "history update:\n"
+                f"\tpast_chunk_size_lb: {past_chunk_size_lb}\n"
+                f"\tpast_chunk_size_ub: {past_chunk_size_ub}\n"
+                f"\tpast_download_time_lb: {past_download_time_lb}\n"
+                f"\tpast_download_time_ub: {past_download_time_ub}\n"
+            )
+
+            # TODO: compute delta QoE bound
+            delta_qoe = get_delta_qoe(br_idx, last_br_idx)
+            f.write(f"Delta QoE: {delta_qoe}\n")
+
 
 # ---------------------------------------------------------------------------
 # CLI
@@ -440,6 +504,13 @@ if __name__ == "__main__":
         required=True,
         help="Path to the Pensieve checkpoint (.pt)",
     )
+
+    parser.add_argument(
+        "--last-br-idx",
+        required=True,
+        help="initial br index",
+    )
+
     parser.add_argument(
         "--env-model-dir",
         required=True,
@@ -450,10 +521,10 @@ if __name__ == "__main__":
     #     default="../data/abr-specifications/full_spec_no_300.json",
     #     help="Path to the ABR JSON spec file",
     # )
-    parser.add_argument(
-        "--output-prefix",
-        default="pensieve_bounds",
-        help="Prefix for output .npz files",
-    )
+    # parser.add_argument(
+    #     "--output-prefix",
+    #     default="pensieve_bounds",
+    #     help="Prefix for output .npz files",
+    # )
     args = parser.parse_args()
     main(args)
