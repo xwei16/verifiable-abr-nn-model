@@ -2,7 +2,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from auto_LiRPA import BoundedModule, BoundedTensor, PerturbationLpNorm
-from utils import load_network_data
+from verification.old_scripts.utils import load_network_data
 
 
 # =========================
