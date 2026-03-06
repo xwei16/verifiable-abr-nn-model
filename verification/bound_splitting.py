@@ -145,35 +145,44 @@ def _write_node(jsonl_file, node_info):
 # 7. BRANCH & BOUND
 # ============================================================
 
-def bab_search(net, init_lb, init_ub, max_depth=8, log_file=None, jsonl_file=None, level=0):
+def bab_search(net, init_lb, init_ub, node_counter, parent_node_id,
+               max_depth=8, log_file=None, jsonl_file=None, level=0):
     """
     Branch and bound search.
 
-    Only the root SPLIT node and SAFE leaf nodes are written to jsonl_file,
-    one line at a time — no in-memory accumulation of node data.
+    Uses a shared node_counter list so IDs are globally unique across all
+    bab_search calls within a verification run.  The root of this search
+    tree is a child of parent_node_id, which links level-1 (and beyond)
+    roots back to their level-0 safe-region parent.
 
     Parameters
     ----------
-    net        : nn.Module
-    init_lb    : Tensor  (1, 6, 8)
-    init_ub    : Tensor  (1, 6, 8)
-    max_depth  : int
-    log_file   : file|None   — text log handle
-    jsonl_file : file|None   — JSONL output handle (written incrementally)
-    level      : int         — verification round number
+    net             : nn.Module
+    init_lb         : Tensor  (1, 6, 8)
+    init_ub         : Tensor  (1, 6, 8)
+    node_counter    : list[int]  — shared mutable counter, e.g. [0]
+    parent_node_id  : int | None — node_id of the safe region that spawned
+                                   this search (None for the very first call)
+    max_depth       : int
+    log_file        : file | None
+    jsonl_file      : file | None  — written incrementally
+    level           : int          — verification round number
 
     Returns
     -------
-    safe_regions : list of (lb, ub, action)
+    safe_regions : list of (lb, ub, action, node_id)
+        node_id is included so lirpa_pensieve can pass it as parent_node_id
+        to the next round's bab_search.
     """
 
     queue = [(init_lb, init_ub, 0)]
     safe_regions = []
-    node_counter = [1]
 
-    # ── root node ─────────────────────────────────────────────────────────
-    root_id = 1
-    root_info = _make_node_info(root_id, None, 0, level, init_lb, init_ub, "SPLIT")
+    # ── root of this search tree ──────────────────────────────────────────
+    node_counter[0] += 1
+    root_id = node_counter[0]
+    root_info = _make_node_info(root_id, parent_node_id, 0, level,
+                                init_lb, init_ub, "SPLIT")
     if jsonl_file:
         _write_node(jsonl_file, root_info)
 
@@ -189,7 +198,7 @@ def bab_search(net, init_lb, init_ub, max_depth=8, log_file=None, jsonl_file=Non
             )
             if jsonl_file:
                 _write_node(jsonl_file, safe_info)
-            safe_regions.append((lb.clone(), ub.clone(), action))
+            safe_regions.append((lb.clone(), ub.clone(), action, node_counter[0]))
             continue
 
         if depth >= max_depth:
@@ -207,28 +216,30 @@ def bab_search(net, init_lb, init_ub, max_depth=8, log_file=None, jsonl_file=Non
 # 8. PUBLIC ENTRY POINT
 # ============================================================
 
-def bound_splitting(net, lb, ub, log_file=None, jsonl_file=None, level=0):
+def bound_splitting(net, lb, ub, node_counter, parent_node_id=None,
+                    log_file=None, jsonl_file=None, level=0):
     """
     Run bound splitting and return certified safe regions.
 
-    Nodes are written to jsonl_file immediately as they are certified —
-    no node list is held in memory or returned.
-
     Parameters
     ----------
-    net        : nn.Module
-    lb         : Tensor  (1, 6, 8)
-    ub         : Tensor  (1, 6, 8)
-    log_file   : file|None   — text log handle
-    jsonl_file : file|None   — JSONL output handle (written incrementally)
-    level      : int         — verification round number
+    net             : nn.Module
+    lb              : Tensor  (1, 6, 8)
+    ub              : Tensor  (1, 6, 8)
+    node_counter    : list[int]  — shared mutable counter, e.g. [0]
+    parent_node_id  : int | None — links this root to a parent safe region
+    log_file        : file | None
+    jsonl_file      : file | None  — JSONL output handle (written incrementally)
+    level           : int
 
     Returns
     -------
-    regions : list of (lb, ub, action)
+    regions : list of (lb, ub, action, node_id)
     """
     regions = bab_search(
         net, lb, ub,
+        node_counter=node_counter,
+        parent_node_id=parent_node_id,
         max_depth=8,
         log_file=log_file,
         jsonl_file=jsonl_file,
@@ -238,16 +249,16 @@ def bound_splitting(net, lb, ub, log_file=None, jsonl_file=None, level=0):
     if log_file:
         log_file.write("\n=== BOUND SPLITTING RESULTS ===\n\n")
         log_file.write(f"Safe Regions ({len(regions)} found):\n")
-        for i, (lb_r, ub_r, action) in enumerate(regions, 1):
-            log_file.write(f"  Region {i}: "
+        for i, (lb_r, ub_r, action, nid) in enumerate(regions, 1):
+            log_file.write(f"  Region {i} [Node {nid}]: "
                            f"Throughput {lb_r[0,2,7].item():.6f}"
                            f" ~ {ub_r[0,2,7].item():.6f}"
                            f"  Action: {action}\n")
         log_file.flush()
 
     print("\nSAFE REGIONS FOUND:\n")
-    for i, (lb_r, ub_r, action) in enumerate(regions):
-        print(f"Region {i+1}: Throughput "
+    for i, (lb_r, ub_r, action, nid) in enumerate(regions):
+        print(f"Region {i+1} [Node {nid}]: Throughput "
               f"{lb_r[0,2,7].item():.6f} ~ {ub_r[0,2,7].item():.6f}"
               f" -> Action {action}")
 
