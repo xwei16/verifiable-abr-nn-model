@@ -143,49 +143,49 @@ def _write_node(jsonl_file, node_info):
 
 
 # ============================================================
-# 7. BRANCH & BOUND
+# 7. BRANCH & BOUND  (pure compute — no logging)
 # ============================================================
 
-def bab_search(lirpa_model, dominance_models, init_lb, init_ub, node_counter, parent_node_id,
-               max_depth=8, log_file=None, jsonl_file=None, level=0):
+def bab_search_compute(lirpa_model, dominance_models, init_lb, init_ub,
+                       first_node_id, root_id, max_depth=8):
     """
-    Branch and bound search.
+    Pure-compute branch-and-bound.  No file I/O — safe to run in a
+    multiprocessing worker.
 
-    Uses a shared node_counter list so IDs are globally unique across all
-    bab_search calls within a verification run.  The root of this search
-    tree is a child of parent_node_id, which links level-1 (and beyond)
-    roots back to their level-0 safe-region parent.
+    Node IDs start from first_node_id + 1 (root = first_node_id + 1).
+    A counter list [first_node_id] is used internally so the caller can
+    reconstruct globally-unique IDs without a shared mutable counter.
 
     Parameters
     ----------
-    net             : nn.Module
-    init_lb         : Tensor  (1, 6, 8)
-    init_ub         : Tensor  (1, 6, 8)
-    node_counter    : list[int]  — shared mutable counter, e.g. [0]
-    parent_node_id  : int | None — node_id of the safe region that spawned
-                                   this search (None for the very first call)
-    max_depth       : int
-    log_file        : file | None
-    jsonl_file      : file | None  — written incrementally
-    level           : int          — verification round number
+    lirpa_model      : BoundedModule  (worker-local)
+    dominance_models : list[BoundedModule]  (worker-local)
+    init_lb          : Tensor  (1, 6, 8)
+    init_ub          : Tensor  (1, 6, 8)
+    first_node_id    : int  — last globally-assigned ID before this call;
+                             root will be first_node_id + 1
+    root_id          : int  — node_id of the root of this subtree
+                             (= first_node_id + 1, pre-computed by caller)
+    max_depth        : int
 
     Returns
     -------
     safe_regions : list of (lb, ub, action, node_id)
-        node_id is included so lirpa_pensieve can pass it as parent_node_id
-        to the next round's bab_search.
+    node_records : list of dict  — all node_info dicts, in creation order,
+                                   ready to be written to JSONL by the caller
+    next_node_id : int  — last ID assigned, so the main process can advance
+                          its counter correctly
     """
+    counter = [first_node_id]
+
+    # root node
+    counter[0] += 1
+    root_info = _make_node_info(root_id, None, 0, 0,
+                                init_lb, init_ub, "SPLIT")
+    node_records = [root_info]
 
     queue = [(init_lb, init_ub, 0)]
     safe_regions = []
-
-    # ── root of this search tree ──────────────────────────────────────────
-    node_counter[0] += 1
-    root_id = node_counter[0]
-    root_info = _make_node_info(root_id, parent_node_id, 0, level,
-                                init_lb, init_ub, "SPLIT")
-    if jsonl_file:
-        _write_node(jsonl_file, root_info)
 
     while queue:
         lb, ub, depth = queue.pop()
@@ -193,28 +193,104 @@ def bab_search(lirpa_model, dominance_models, init_lb, init_ub, node_counter, pa
         safe, action = verify_any_action(dominance_models, lb, ub)
 
         if safe:
-            node_counter[0] += 1
+            counter[0] += 1
             safe_info = _make_node_info(
-                node_counter[0], root_id, depth, level, lb, ub, "SAFE", action
+                counter[0], root_id, depth, 0, lb, ub, "SAFE", action
             )
-            if jsonl_file:
-                _write_node(jsonl_file, safe_info)
-            safe_regions.append((lb.clone(), ub.clone(), action, node_counter[0]))
+            node_records.append(safe_info)
+            safe_regions.append((lb.clone(), ub.clone(), action, counter[0]))
             continue
 
         if depth >= max_depth:
-            # Silently discard — not logged
             continue
 
         (l1, u1), (l2, u2) = split_box(lb, ub)
         queue.append((l1, u1, depth + 1))
         queue.append((l2, u2, depth + 1))
 
+    return safe_regions, node_records, counter[0]
+
+
+# ============================================================
+# 8. LOG RESULTS  (main-process only — called after pool.map)
+# ============================================================
+
+def log_bab_results(safe_regions, node_records, parent_node_id, level,
+                    log_file=None, jsonl_file=None):
+    """
+    Write tree nodes and summary to log files.  Always called in the main
+    process after bab_search_compute results have been collected.
+
+    Parameters
+    ----------
+    safe_regions    : list of (lb, ub, action, node_id)  — from bab_search_compute
+    node_records    : list of dict  — from bab_search_compute
+    parent_node_id  : int | None
+    level           : int
+    log_file        : file | None
+    jsonl_file      : file | None
+    """
+    if jsonl_file:
+        # Patch parent_id and level onto the root node (worker didn't know them)
+        if node_records:
+            node_records[0]["parent_id"] = parent_node_id
+            node_records[0]["level"]     = level
+        for rec in node_records:
+            rec["level"] = level          # propagate level to all nodes
+            _write_node(jsonl_file, rec)
+
+    if log_file:
+        log_file.write("\n=== BOUND SPLITTING RESULTS ===\n\n")
+        log_file.write(f"Safe Regions ({len(safe_regions)} found):\n")
+        for i, (lb_r, ub_r, action, nid) in enumerate(safe_regions, 1):
+            log_file.write(f"  Region {i} [Node {nid}]: "
+                           f"Throughput {lb_r[0,2,7].item():.6f}"
+                           f" ~ {ub_r[0,2,7].item():.6f}"
+                           f"  Action: {action}\n")
+        log_file.flush()
+
+    print("\nSAFE REGIONS FOUND:\n")
+    for i, (lb_r, ub_r, action, nid) in enumerate(safe_regions):
+        print(f"Region {i+1} [Node {nid}]: Throughput "
+              f"{lb_r[0,2,7].item():.6f} ~ {ub_r[0,2,7].item():.6f}"
+              f" -> Action {action}")
+
+
+# ============================================================
+# 9. BRANCH & BOUND  (original combined API — kept for compatibility)
+# ============================================================
+
+def bab_search(lirpa_model, dominance_models, init_lb, init_ub, node_counter, parent_node_id,
+               max_depth=8, log_file=None, jsonl_file=None, level=0):
+    """
+    Original combined compute+log entry point.  Use this when calling from
+    the main process directly (no multiprocessing).
+
+    Internally delegates to bab_search_compute + log_bab_results so there
+    is no code duplication.
+    """
+    node_counter[0] += 1
+    root_id = node_counter[0]
+    first_node_id = root_id - 1   # bab_search_compute will increment to root_id
+
+    safe_regions, node_records, last_id = bab_search_compute(
+        lirpa_model, dominance_models, init_lb, init_ub,
+        first_node_id=first_node_id,
+        root_id=root_id,
+        max_depth=max_depth,
+    )
+
+    # Advance the shared counter to account for all nodes created in the worker
+    node_counter[0] = last_id
+
+    log_bab_results(safe_regions, node_records, parent_node_id, level,
+                    log_file=log_file, jsonl_file=jsonl_file)
+
     return safe_regions
 
 
 # ============================================================
-# 8. PUBLIC ENTRY POINT
+# 10. PUBLIC ENTRY POINT
 # ============================================================
 
 def bound_splitting(lirpa_model, dominance_models, lb, ub, node_counter, parent_node_id=None,
@@ -224,7 +300,8 @@ def bound_splitting(lirpa_model, dominance_models, lb, ub, node_counter, parent_
 
     Parameters
     ----------
-    net             : nn.Module
+    lirpa_model     : BoundedModule
+    dominance_models: list[BoundedModule]
     lb              : Tensor  (1, 6, 8)
     ub              : Tensor  (1, 6, 8)
     node_counter    : list[int]  — shared mutable counter, e.g. [0]
@@ -246,21 +323,4 @@ def bound_splitting(lirpa_model, dominance_models, lb, ub, node_counter, parent_
         jsonl_file=jsonl_file,
         level=level,
     )
-
-    if log_file:
-        log_file.write("\n=== BOUND SPLITTING RESULTS ===\n\n")
-        log_file.write(f"Safe Regions ({len(regions)} found):\n")
-        for i, (lb_r, ub_r, action, nid) in enumerate(regions, 1):
-            log_file.write(f"  Region {i} [Node {nid}]: "
-                           f"Throughput {lb_r[0,2,7].item():.6f}"
-                           f" ~ {ub_r[0,2,7].item():.6f}"
-                           f"  Action: {action}\n")
-        log_file.flush()
-
-    print("\nSAFE REGIONS FOUND:\n")
-    for i, (lb_r, ub_r, action, nid) in enumerate(regions):
-        print(f"Region {i+1} [Node {nid}]: Throughput "
-              f"{lb_r[0,2,7].item():.6f} ~ {ub_r[0,2,7].item():.6f}"
-              f" -> Action {action}")
-
     return regions
