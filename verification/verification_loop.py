@@ -8,12 +8,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+# python3 verification_loop.py   --pensieve-model-path ../model/abr-model/pensieve_rl_model/nn_model_ep_155400.pth   --last-br-idx 4   --env-model-dir ../model/network-prediction-model/
 from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import PerturbationLpNorm
-from bound_splitting import bound_splitting
+from bound_splitting import bound_splitting, LogitDominance
 
 
-MAX_ROUND = 2
+MAX_ROUND = 5
 BRS = [300,750,1200,1850,2850,4300]
 
 # ---------------------------------------------------------------------------
@@ -104,10 +105,7 @@ def load_initial_state(device):
 # ---------------------------------------------------------------------------
 # Pensieve output bounds
 # ---------------------------------------------------------------------------
-def pensieve_output_bounds(model, lb, ub, method):
-    device = lb.device
-    dummy = torch.zeros(1, 6, 8, device=device)
-    lirpa_model = BoundedModule(model, dummy, device=device)
+def pensieve_output_bounds(lirpa_model, lb, ub, method):
     ptb = PerturbationLpNorm(norm=float("inf"), x_L=lb, x_U=ub)
     x = BoundedTensor((lb + ub) / 2.0, ptb)
     return lirpa_model.compute_bounds(x=(x,), method=method)
@@ -142,10 +140,8 @@ def load_normalization_params(filepath):
 # ---------------------------------------------------------------------------
 # ENV model output bounds
 # ---------------------------------------------------------------------------
-def net_output_bounds(f, model, lb, ub, X_max, y_max, method="IBP"):
+def net_output_bounds(f, lirpa_model, lb, ub, X_max, y_max, method="IBP"):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = model.to(device)
-    model.eval()
 
     X_max = X_max.astype(np.float32)
     y_max = np.float32(y_max)
@@ -160,9 +156,7 @@ def net_output_bounds(f, model, lb, ub, X_max, y_max, method="IBP"):
     f.write(f"│  │  ├─ Input bounds (ENV input, normalized):\n"
             f"│  │  │  ├─ Lower: {lb}\n"
             f"│  │  │  └─ Upper: {ub}\n")
-
-    dummy = torch.zeros(1, lb.shape[1]).to(device)
-    lirpa_model = BoundedModule(model, dummy, device=device)
+    
     ptb = PerturbationLpNorm(norm=float("inf"), x_L=lb, x_U=ub)
     x = BoundedTensor((lb + ub) / 2.0, ptb)
     lb_out, ub_out = lirpa_model.compute_bounds(x=(x,), method=method)
@@ -215,7 +209,22 @@ def main(args):
     print(f"[✓] Pensieve Model loaded from {args.pensieve_model_path}")
 
     env_model = torch.load(args.env_model_dir + "network_pred.pt", weights_only=False)
+    env_model.eval().to(device)
     print(f"[✓] ENV Model loaded from {args.env_model_dir}")
+
+    # create LiRPA models ONCE
+    dummy_pensieve = torch.zeros(1, 6, 8, device=device)
+    lirpa_pensieve = BoundedModule(pensieve_actor, dummy_pensieve, device=device)
+
+    dummy_env = torch.zeros(1, 19, device=device)
+    lirpa_env = BoundedModule(env_model, dummy_env, device=device)
+
+    dominance_models = []
+    dummy = torch.zeros(1,6,8).to(device)
+
+    for k in range(6):
+        wrapped = LogitDominance(pensieve_actor, k)
+        dominance_models.append(BoundedModule(wrapped, dummy))
 
     X_max, y_max = load_normalization_params(args.env_model_dir + "normalization_params.npz")
 
@@ -291,7 +300,7 @@ def main(args):
                         f"│  └─ Last BR Index: {current_br_idx}\n")
 
                 logit_lb, logit_ub = pensieve_output_bounds(
-                    pensieve_actor, input_lb, input_ub, method)
+                    lirpa_pensieve, input_lb, input_ub, method)
                 f.write(f"│\n├─ Logit Bounds (Pensieve Output):\n"
                         f"│  ├─ Lower: {logit_lb.detach().cpu().numpy()}\n"
                         f"│  └─ Upper: {logit_ub.detach().cpu().numpy()}\n")
@@ -300,8 +309,9 @@ def main(args):
 
                 # Pass the shared counter and the parent link so the new root
                 # is connected to parent_node_id in the global tree.
+
                 safe_regions = bound_splitting(
-                    pensieve_actor, input_lb, input_ub,
+                    lirpa_pensieve, dominance_models, input_lb, input_ub,
                     node_counter=node_counter,
                     parent_node_id=parent_node_id,
                     log_file=f,
@@ -331,7 +341,7 @@ def main(args):
                     )
                     f.write(f"│  │\n")
                     dt_lb, dt_ub = net_output_bounds(
-                        f, env_model, env_lb, env_ub, X_max, y_max, method)
+                        f, lirpa_env, env_lb, env_ub, X_max, y_max, method)
 
                     new_past_chunk_size_lb = np.roll(chunk_size_lb, -1)
                     new_past_chunk_size_lb[-1] = np.float32(input_lb_r_np[4, 2])

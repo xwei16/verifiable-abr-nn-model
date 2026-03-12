@@ -10,6 +10,7 @@ from auto_LiRPA.perturbations import PerturbationLpNorm
 # 1. PENSIEVE MODEL
 # ============================================================
 
+
 class PensieveActor(nn.Module):
     def __init__(self, s_dim, a_dim):
         super().__init__()
@@ -61,16 +62,16 @@ class LogitDominance(nn.Module):
 # 3. VERIFY REGION FOR ONE ACTION
 # ============================================================
 
-def verify_action(model, lb, ub):
-    center = (lb + ub) / 2
-    eps = (ub - lb) / 2
+def verify_action(lirpa_model, lb, ub):
+    ptb = PerturbationLpNorm(
+        norm=float("inf"),
+        x_L=lb,
+        x_U=ub
+    )
 
-    ptb = PerturbationLpNorm(norm=float("inf"), eps=eps)
-    x = BoundedTensor(center, ptb)
+    x = BoundedTensor((lb + ub) / 2, ptb)
 
-    bounded_model = BoundedModule(model, center, device=lb.device)
-
-    out_lb, _ = bounded_model.compute_bounds(
+    out_lb, _ = lirpa_model.compute_bounds(
         x=(x,),
         method="CROWN-Optimized"
     )
@@ -82,10 +83,10 @@ def verify_action(model, lb, ub):
 # 4. CHECK IF ANY ACTION DOMINATES
 # ============================================================
 
-def verify_any_action(net, lb, ub):
+def verify_any_action(dominance_models, lb, ub):
     for k in range(6):
-        wrapped = LogitDominance(net, k).to(lb.device)
-        if verify_action(wrapped, lb, ub):
+        lirpa_model = dominance_models[k]
+        if verify_action(lirpa_model, lb, ub):
             return True, k
     return False, None
 
@@ -145,7 +146,7 @@ def _write_node(jsonl_file, node_info):
 # 7. BRANCH & BOUND
 # ============================================================
 
-def bab_search(net, init_lb, init_ub, node_counter, parent_node_id,
+def bab_search(lirpa_model, dominance_models, init_lb, init_ub, node_counter, parent_node_id,
                max_depth=8, log_file=None, jsonl_file=None, level=0):
     """
     Branch and bound search.
@@ -189,7 +190,7 @@ def bab_search(net, init_lb, init_ub, node_counter, parent_node_id,
     while queue:
         lb, ub, depth = queue.pop()
 
-        safe, action = verify_any_action(net, lb, ub)
+        safe, action = verify_any_action(dominance_models, lb, ub)
 
         if safe:
             node_counter[0] += 1
@@ -216,7 +217,7 @@ def bab_search(net, init_lb, init_ub, node_counter, parent_node_id,
 # 8. PUBLIC ENTRY POINT
 # ============================================================
 
-def bound_splitting(net, lb, ub, node_counter, parent_node_id=None,
+def bound_splitting(lirpa_model, dominance_models, lb, ub, node_counter, parent_node_id=None,
                     log_file=None, jsonl_file=None, level=0):
     """
     Run bound splitting and return certified safe regions.
@@ -237,7 +238,7 @@ def bound_splitting(net, lb, ub, node_counter, parent_node_id=None,
     regions : list of (lb, ub, action, node_id)
     """
     regions = bab_search(
-        net, lb, ub,
+        lirpa_model, dominance_models, lb, ub,
         node_counter=node_counter,
         parent_node_id=parent_node_id,
         max_depth=8,
