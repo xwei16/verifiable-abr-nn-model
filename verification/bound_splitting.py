@@ -42,53 +42,83 @@ class PensieveActor(nn.Module):
 
 
 # ============================================================
-# 2. DOMINANCE WRAPPER (y_k - y_i)
+# 2. DOMINANCE WRAPPER — single matrix, one bound propagation
 # ============================================================
 
-class LogitDominance(nn.Module):
-    def __init__(self, net, k):
+class AllDominance(nn.Module):
+    """
+    Replaces 6 × LogitDominance with one fixed linear layer.
+
+    For a_dim=6 actions, builds an (a_dim*(a_dim-1), a_dim) = (30, 6) matrix M
+    where block k  (rows k*5 : (k+1)*5)  encodes  y_k - y_i  for all i ≠ k.
+
+    One forward pass → 30-dim output.
+    LiRPA propagates bounds through the actor AND this layer in a single pass,
+    so verify_any_action needs only one compute_bounds call instead of six.
+    """
+    def __init__(self, net, a_dim=6):
         super().__init__()
-        self.net = net
-        self.k = k
+        self.net   = net
+        self.a_dim = a_dim
+        self.n_pairs = a_dim * (a_dim - 1)   # 30
+
+        rows = []
+        for k in range(a_dim):
+            for i in range(a_dim):
+                if i == k:
+                    continue
+                row = [0.0] * a_dim
+                row[k] =  1.0
+                row[i] = -1.0
+                rows.append(row)
+
+        # Fixed (non-trainable) weight matrix — shape (30, 6)
+        M = torch.tensor(rows, dtype=torch.float32)
+        self.dom = nn.Linear(a_dim, self.n_pairs, bias=False)
+        self.dom.weight = nn.Parameter(M, requires_grad=False)
 
     def forward(self, x):
-        y = self.net(x)
-        yk = y[:, self.k:self.k+1]
-        others = torch.cat([y[:, :self.k], y[:, self.k+1:]], dim=1)
-        return yk - others
+        y = self.net(x)          # (batch, 6)
+        return self.dom(y)       # (batch, 30)
 
 
 # ============================================================
-# 3. VERIFY REGION FOR ONE ACTION
+# 3. VERIFY — single bound propagation covers all 6 actions
 # ============================================================
 
-def verify_action(lirpa_model, lb, ub):
-    ptb = PerturbationLpNorm(
-        norm=float("inf"),
-        x_L=lb,
-        x_U=ub
-    )
-
-    x = BoundedTensor((lb + ub) / 2, ptb)
-
-    out_lb, _ = lirpa_model.compute_bounds(
-        x=(x,),
-        method="CROWN-Optimized"
-    )
-
-    return (out_lb >= 0).all().item()
+BATCH_SIZE = 256   # number of queue nodes processed per compute_bounds call
 
 
-# ============================================================
-# 4. CHECK IF ANY ACTION DOMINATES
-# ============================================================
+def verify_any_action(lirpa_all_dominance, lb, ub):
+    """
+    Batched compute_bounds call.
 
-def verify_any_action(dominance_models, lb, ub):
-    for k in range(6):
-        lirpa_model = dominance_models[k]
-        if verify_action(lirpa_model, lb, ub):
-            return True, k
-    return False, None
+    lb, ub : (B, 6, 8) tensors — B regions stacked along dim 0.
+    Returns a list of B (safe: bool, action: int|None) tuples.
+    """
+    ptb = PerturbationLpNorm(norm=float("inf"), x_L=lb, x_U=ub)
+    x   = BoundedTensor((lb + ub) / 2, ptb)
+
+    out_lb, _ = lirpa_all_dominance.compute_bounds(
+        x=(x,), method="CROWN-Optimized"
+    )                                   # (B, 30)
+
+    a_dim = 6
+    block = a_dim - 1                   # 5 comparisons per action
+
+    results = []
+    for b in range(out_lb.shape[0]):
+        row = out_lb[b]                 # (30,)
+        found = False
+        for k in range(a_dim):
+            if (row[k * block : (k + 1) * block] >= 0).all():
+                results.append((True, k))
+                found = True
+                break
+        if not found:
+            results.append((False, None))
+
+    return results
 
 
 # ============================================================
@@ -146,67 +176,67 @@ def _write_node(jsonl_file, node_info):
 # 7. BRANCH & BOUND  (pure compute — no logging)
 # ============================================================
 
-def bab_search_compute(lirpa_model, dominance_models, init_lb, init_ub,
-                       first_node_id, root_id, max_depth=8):
+def bab_search_compute(lirpa_model, lirpa_all_dominance, init_lb, init_ub,
+                       max_depth=8):
     """
     Pure-compute branch-and-bound.  No file I/O — safe to run in a
-    multiprocessing worker.
+    worker thread.
 
-    Node IDs start from first_node_id + 1 (root = first_node_id + 1).
-    A counter list [first_node_id] is used internally so the caller can
-    reconstruct globally-unique IDs without a shared mutable counter.
+    Node IDs are local, starting from 1 (root = 1).  The caller is
+    responsible for applying a global offset via the renumber pass in
+    the main thread.
 
     Parameters
     ----------
-    lirpa_model      : BoundedModule  (worker-local)
-    dominance_models : list[BoundedModule]  (worker-local)
-    init_lb          : Tensor  (1, 6, 8)
-    init_ub          : Tensor  (1, 6, 8)
-    first_node_id    : int  — last globally-assigned ID before this call;
-                             root will be first_node_id + 1
-    root_id          : int  — node_id of the root of this subtree
-                             (= first_node_id + 1, pre-computed by caller)
-    max_depth        : int
+    lirpa_model          : BoundedModule  (worker-local)
+    lirpa_all_dominance  : BoundedModule  (worker-local)
+    init_lb              : Tensor  (1, 6, 8)
+    init_ub              : Tensor  (1, 6, 8)
+    max_depth            : int
 
     Returns
     -------
-    safe_regions : list of (lb, ub, action, node_id)
+    safe_regions : list of (lb, ub, action, local_node_id)
     node_records : list of dict  — all node_info dicts, in creation order,
-                                   ready to be written to JSONL by the caller
-    next_node_id : int  — last ID assigned, so the main process can advance
-                          its counter correctly
+                                   with local IDs; caller applies offset
+    n_local      : int  — total nodes created (= highest local ID assigned)
     """
-    counter = [first_node_id]
+    counter = [0]
 
-    # root node
+    # root node — always local ID 1
     counter[0] += 1
-    root_info = _make_node_info(root_id, None, 0, 0,
-                                init_lb, init_ub, "SPLIT")
+    root_info = _make_node_info(1, None, 0, 0, init_lb, init_ub, "SPLIT")
     node_records = [root_info]
 
     queue = [(init_lb, init_ub, 0)]
     safe_regions = []
 
     while queue:
-        lb, ub, depth = queue.pop()
+        # Pop up to BATCH_SIZE nodes and verify them in one compute_bounds call
+        batch = []
+        while queue and len(batch) < BATCH_SIZE:
+            batch.append(queue.pop())
 
-        safe, action = verify_any_action(dominance_models, lb, ub)
+        lbs = torch.cat([lb for lb, ub, depth in batch], dim=0)   # (B, 6, 8)
+        ubs = torch.cat([ub for lb, ub, depth in batch], dim=0)   # (B, 6, 8)
+        verify_results = verify_any_action(lirpa_all_dominance, lbs, ubs)
 
-        if safe:
-            counter[0] += 1
-            safe_info = _make_node_info(
-                counter[0], root_id, depth, 0, lb, ub, "SAFE", action
-            )
-            node_records.append(safe_info)
-            safe_regions.append((lb.clone(), ub.clone(), action, counter[0]))
-            continue
+        for (lb, ub, depth), (safe, action) in zip(batch, verify_results):
+            if safe:
+                counter[0] += 1
+                safe_info = _make_node_info(
+                    counter[0], 1, depth, 0, lb, ub, "SAFE", action
+                )
+                node_records.append(safe_info)
+                safe_regions.append((lb.clone(), ub.clone(), action, counter[0]))
+                continue
 
-        if depth >= max_depth:
-            continue
+            if depth >= max_depth:
+                continue
 
-        (l1, u1), (l2, u2) = split_box(lb, ub)
-        queue.append((l1, u1, depth + 1))
-        queue.append((l2, u2, depth + 1))
+            (l1, u1), (l2, u2) = split_box(lb, ub)
+            queue.append((l1, u1, depth + 1))
+            queue.append((l2, u2, depth + 1))
 
     return safe_regions, node_records, counter[0]
 
@@ -219,12 +249,13 @@ def log_bab_results(safe_regions, node_records, parent_node_id, level,
                     log_file=None, jsonl_file=None):
     """
     Write tree nodes and summary to log files.  Always called in the main
-    process after bab_search_compute results have been collected.
+    process after bab_search_compute results have been collected and
+    renumbered.
 
     Parameters
     ----------
-    safe_regions    : list of (lb, ub, action, node_id)  — from bab_search_compute
-    node_records    : list of dict  — from bab_search_compute
+    safe_regions    : list of (lb, ub, action, node_id)  — already renumbered
+    node_records    : list of dict  — already renumbered
     parent_node_id  : int | None
     level           : int
     log_file        : file | None
@@ -260,28 +291,25 @@ def log_bab_results(safe_regions, node_records, parent_node_id, level,
 # 9. BRANCH & BOUND  (original combined API — kept for compatibility)
 # ============================================================
 
-def bab_search(lirpa_model, dominance_models, init_lb, init_ub, node_counter, parent_node_id,
+def bab_search(lirpa_model, lirpa_all_dominance, init_lb, init_ub, node_counter, parent_node_id,
                max_depth=8, log_file=None, jsonl_file=None, level=0):
     """
     Original combined compute+log entry point.  Use this when calling from
     the main process directly (no multiprocessing).
-
-    Internally delegates to bab_search_compute + log_bab_results so there
-    is no code duplication.
     """
-    node_counter[0] += 1
-    root_id = node_counter[0]
-    first_node_id = root_id - 1   # bab_search_compute will increment to root_id
-
-    safe_regions, node_records, last_id = bab_search_compute(
-        lirpa_model, dominance_models, init_lb, init_ub,
-        first_node_id=first_node_id,
-        root_id=root_id,
+    safe_regions, node_records, n_local = bab_search_compute(
+        lirpa_model, lirpa_all_dominance, init_lb, init_ub,
         max_depth=max_depth,
     )
 
-    # Advance the shared counter to account for all nodes created in the worker
-    node_counter[0] = last_id
+    # Renumber local IDs to global IDs
+    off = node_counter[0]
+    for rec in node_records:
+        rec["node_id"] += off
+        if rec["parent_id"] is not None:
+            rec["parent_id"] += off
+    safe_regions = [(lb, ub, a, nid + off) for lb, ub, a, nid in safe_regions]
+    node_counter[0] += n_local
 
     log_bab_results(safe_regions, node_records, parent_node_id, level,
                     log_file=log_file, jsonl_file=jsonl_file)
@@ -293,29 +321,29 @@ def bab_search(lirpa_model, dominance_models, init_lb, init_ub, node_counter, pa
 # 10. PUBLIC ENTRY POINT
 # ============================================================
 
-def bound_splitting(lirpa_model, dominance_models, lb, ub, node_counter, parent_node_id=None,
+def bound_splitting(lirpa_model, lirpa_all_dominance, lb, ub, node_counter, parent_node_id=None,
                     log_file=None, jsonl_file=None, level=0):
     """
     Run bound splitting and return certified safe regions.
 
     Parameters
     ----------
-    lirpa_model     : BoundedModule
-    dominance_models: list[BoundedModule]
-    lb              : Tensor  (1, 6, 8)
-    ub              : Tensor  (1, 6, 8)
-    node_counter    : list[int]  — shared mutable counter, e.g. [0]
-    parent_node_id  : int | None — links this root to a parent safe region
-    log_file        : file | None
-    jsonl_file      : file | None  — JSONL output handle (written incrementally)
-    level           : int
+    lirpa_model          : BoundedModule  (pensieve actor — used for logit logging only)
+    lirpa_all_dominance  : BoundedModule  (AllDominance — single model for all 6 checks)
+    lb                   : Tensor  (1, 6, 8)
+    ub                   : Tensor  (1, 6, 8)
+    node_counter         : list[int]
+    parent_node_id       : int | None
+    log_file             : file | None
+    jsonl_file           : file | None
+    level                : int
 
     Returns
     -------
     regions : list of (lb, ub, action, node_id)
     """
     regions = bab_search(
-        lirpa_model, dominance_models, lb, ub,
+        lirpa_model, lirpa_all_dominance, lb, ub,
         node_counter=node_counter,
         parent_node_id=parent_node_id,
         max_depth=8,

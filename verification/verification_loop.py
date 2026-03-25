@@ -2,6 +2,7 @@
 lirpa_pensieve.py  —  threading edition
 """
 import argparse
+import io
 import itertools
 import threading
 import numpy as np
@@ -12,14 +13,13 @@ from concurrent.futures import ThreadPoolExecutor
 
 from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import PerturbationLpNorm
-from bound_splitting import bab_search_compute, log_bab_results, LogitDominance
+from bound_splitting import bab_search_compute, log_bab_results, AllDominance
 
 
 MAX_ROUND = 5
-# One worker per free GPU — CUDA serializes threads sharing the same device,
-# so more threads than GPUs gives zero extra parallelism and adds overhead.
-# GPUs 0, 1, 2 are free; GPU 3 is occupied by another process.
-WORKER_DEVICES = ["cuda:0", "cuda:1", "cuda:2"]
+# Main thread uses cuda:0 for logging-only forward passes.
+# Workers start from cuda:1 so cuda:0 is not double-loaded.
+WORKER_DEVICES = ["cuda:1", "cuda:2", "cuda:3"]
 NUM_WORKERS = len(WORKER_DEVICES)
 BRS = [300, 750, 1200, 1850, 2850, 4300]
 
@@ -100,11 +100,9 @@ def _thread_init(pensieve_model_path: str, env_model_dir: str):
     dummy_p = torch.zeros(1, 6, 8, device=device)
     _tl.lirpa_pensieve = BoundedModule(pensieve_actor, dummy_p, device=device)
 
-    _tl.dominance_models = []
-    dummy = torch.zeros(1, 6, 8, device=device)
-    for k in range(6):
-        wrapped = LogitDominance(pensieve_actor, k)
-        _tl.dominance_models.append(BoundedModule(wrapped, dummy))
+    # Single AllDominance model — one bound propagation covers all 6 actions
+    all_dom = AllDominance(pensieve_actor, a_dim=6).to(device)
+    _tl.lirpa_all_dominance = BoundedModule(all_dom, dummy_p, device=device)
 
     env_model = torch.load(env_model_dir + "network_pred.pt", weights_only=False)
     env_model.eval().to(device)
@@ -121,22 +119,20 @@ def _thread_init(pensieve_model_path: str, env_model_dir: str):
 # Thread worker — Pensieve bound splitting
 # ---------------------------------------------------------------------------
 def run_bound_split(args):
-    input_lb, input_ub, first_node_id, root_id, parent_node_id, round_num = args
+    input_lb, input_ub = args
 
     # Tensors were created on the main thread's device — move to this GPU
     input_lb = input_lb.to(_tl.device)
     input_ub = input_ub.to(_tl.device)
 
-    safe_regions, node_records, last_node_id = bab_search_compute(
+    safe_regions, node_records, n_local = bab_search_compute(
         _tl.lirpa_pensieve,
-        _tl.dominance_models,
+        _tl.lirpa_all_dominance,
         input_lb,
         input_ub,
-        first_node_id=first_node_id,
-        root_id=root_id,
         max_depth=8,
     )
-    return safe_regions, node_records, last_node_id
+    return safe_regions, node_records, n_local
 
 
 # ---------------------------------------------------------------------------
@@ -161,11 +157,14 @@ def env_worker(args):
         download_time_lb, download_time_ub,
     )
 
+    # Capture log output in a buffer so the main thread can write it without
+    # re-running the computation on cuda:0.
+    buf = io.StringIO()
     dt_lb, dt_ub = net_output_bounds(
-        None, _tl.lirpa_env, env_lb, env_ub,
+        buf, _tl.lirpa_env, env_lb, env_ub,
         _tl.X_max, _tl.y_max, method)
 
-    return dt_lb, dt_ub, input_lb_r_np, input_ub_r_np
+    return dt_lb, dt_ub, input_lb_r_np, input_ub_r_np, buf.getvalue()
 
 
 # ---------------------------------------------------------------------------
@@ -250,7 +249,8 @@ def load_normalization_params(filepath):
 # ENV model output bounds
 # ---------------------------------------------------------------------------
 def net_output_bounds(f, lirpa_model, lb, ub, X_max, y_max, method="IBP"):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # Derive device from the model — works correctly on any worker thread's GPU
+    device = next(lirpa_model.parameters()).device
 
     X_max = X_max.astype(np.float32)
     y_max = np.float32(y_max)
@@ -321,21 +321,13 @@ def main(args):
     device = torch.device("cuda:0")
     print(f"[main thread] device: {device}")
 
-    # Main-thread models used only for the pensieve_output_bounds logging call
+    # Main-thread model — only used for the pensieve_output_bounds logging call.
+    # ENV/AllDominance models are not needed here; workers own their own copies.
     pensieve_actor = load_pensieve_actor(args.pensieve_model_path, device)
     print(f"[✓] Pensieve Model loaded from {args.pensieve_model_path}")
 
-    env_model = torch.load(args.env_model_dir + "network_pred.pt", weights_only=False)
-    env_model.eval().to(device)
-    print(f"[✓] ENV Model loaded from {args.env_model_dir}")
-
     dummy_p = torch.zeros(1, 6, 8, device=device)
     lirpa_pensieve = BoundedModule(pensieve_actor, dummy_p, device=device)
-
-    dummy_e = torch.zeros(1, 19, device=device)
-    lirpa_env = BoundedModule(env_model, dummy_e, device=device)
-
-    X_max, y_max = load_normalization_params(args.env_model_dir + "normalization_params.npz")
 
     last_br_idx = int(args.last_br_idx)
 
@@ -359,18 +351,21 @@ def main(args):
 
     with open(log_filename, "w") as f, open(jsonl_log_filename, "w") as jsonl_f:
 
+        method = "backward"
+        # "CROWN-Optimized"
+
         f.write("="*70 + "\n")
         f.write("VERIFICATION LOOP WITH BOUND SPLITTING\n")
         f.write("="*70 + "\n")
         f.write(f"Device: {device}\n")
         f.write(f"Pensieve Model: {args.pensieve_model_path}\n")
         f.write(f"ENV Model: {args.env_model_dir}\n")
-        f.write(f"Method: CROWN-Optimized\n")
+        f.write(f"Method: {method}\n")
         f.write(f"Initial BR Index: {last_br_idx}\n")
         f.write("="*70 + "\n\n")
         f.flush()
 
-        method = "CROWN-Optimized"
+        
         input_lb, input_ub = load_initial_state(device)
 
         past_chunk_size_lb    = np.zeros(8, dtype=np.float32)
@@ -394,36 +389,30 @@ def main(args):
 
             next_regions = []
 
-            # Pre-assign node IDs in the main thread (single-threaded section)
-            tasks = []
-            for (input_lb, input_ub,
-                 chunk_size_lb, chunk_size_ub,
-                 download_time_lb, download_time_ub,
-                 current_br_idx, parent_node_id) in current_regions:
-
-                node_counter[0] += 1
-                root_id = node_counter[0]
-                tasks.append((
-                    input_lb, input_ub,
-                    root_id - 1,   # first_node_id
-                    root_id,
-                    parent_node_id,
-                    round_num,
-                ))
-
-            # Dispatch all bound-split tasks — no pickling, just references
+            # Dispatch all bound-split tasks — workers use local IDs starting from 1
+            tasks = [(input_lb, input_ub) for (input_lb, input_ub, *_) in current_regions]
             futures = [executor.submit(run_bound_split, t) for t in tasks]
             results = [fut.result() for fut in futures]
 
-            for region_idx, (region, (safe_regions, node_records, last_node_id)) in \
-                    enumerate(zip(current_regions, results)):
+            # Renumber local IDs to globally unique IDs — O(nodes), main thread only
+            renumbered = []
+            for safe_regions, node_records, n_local in results:
+                off = node_counter[0]
+                for rec in node_records:
+                    rec["node_id"] += off
+                    if rec["parent_id"] is not None:
+                        rec["parent_id"] += off
+                safe_regions = [(lb, ub, a, nid + off) for lb, ub, a, nid in safe_regions]
+                node_counter[0] += n_local
+                renumbered.append((safe_regions, node_records))
+
+            for region_idx, (region, (safe_regions, node_records)) in \
+                    enumerate(zip(current_regions, renumbered)):
 
                 (input_lb, input_ub,
                  chunk_size_lb, chunk_size_ub,
                  download_time_lb, download_time_ub,
                  current_br_idx, parent_node_id) = region
-
-                node_counter[0] = max(node_counter[0], last_node_id)
 
                 f.write(f"\n[Region {region_idx + 1}/{len(current_regions)}]\n")
                 f.write(f"{'─'*70}\n")
@@ -444,7 +433,6 @@ def main(args):
 
                 f.write(f"│\n├─ BOUND SPLITTING SEARCH:\n│  │\n")
 
-                # Write logs for the work the threads already did — no recompute
                 log_bab_results(
                     safe_regions, node_records,
                     parent_node_id=parent_node_id,
@@ -479,17 +467,10 @@ def main(args):
                     f.write(f"│\n├─ Processing Safe Region {safe_idx + 1} "
                             f"[Node {safe_node_id}]:\n")
 
-                    dt_lb, dt_ub, input_lb_r_np, input_ub_r_np = env_result
-
-                    env_lb, env_ub = network_prediction_bound(
-                        input_lb_r_np, input_ub_r_np, br_idx,
-                        chunk_size_lb, chunk_size_ub,
-                        download_time_lb, download_time_ub,
-                    )
+                    dt_lb, dt_ub, input_lb_r_np, input_ub_r_np, env_log = env_result
 
                     f.write(f"│  │\n")
-                    dt_lb, dt_ub = net_output_bounds(
-                        f, lirpa_env, env_lb, env_ub, X_max, y_max, method)
+                    f.write(env_log)
 
                     new_past_chunk_size_lb = np.roll(chunk_size_lb, -1)
                     new_past_chunk_size_lb[-1] = np.float32(input_lb_r_np[4, 2])
